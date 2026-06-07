@@ -1,1 +1,1 @@
-[The full rich TUI demo implementation]
+SEE LOCAL FILE - watch command, real data TUI integration, case cmd, PR7 enhancements
