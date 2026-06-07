@@ -1,0 +1,1 @@
+full rss from read
