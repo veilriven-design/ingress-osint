@@ -1,1 +1,1 @@
-[Full updated README with PR7, installer section, real TUI - see local]
+[Current full README with PR7 status, installer instructions, real data TUI emphasis]

@@ -1,1 +1,1 @@
-[Full current cli.py with watch, real data integration, case cmd, PR7 enhancements - see local repo for exact]
+[Current full cli.py content with all PR7 real TUI integration, watch, case, delta, export, etc. - committed locally]
