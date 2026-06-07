@@ -1,1 +1,1 @@
-full cli content here (use the concatenated from reads)
+... (the restored full cli)

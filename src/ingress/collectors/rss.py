@@ -1,1 +1,1 @@
-full rss from read
+... (restored full)

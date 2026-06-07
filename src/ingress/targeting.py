@@ -1,1 +1,1 @@
-full targeting from last read
+... (restored full)
