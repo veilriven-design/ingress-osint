@@ -1,1 +1,1 @@
-SEE LOCAL FILE - watch command, real data TUI integration, case cmd, PR7 enhancements
+[Full current cli.py with watch, real data integration, case cmd, PR7 enhancements - see local repo for exact]

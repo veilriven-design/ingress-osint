@@ -1,1 +1,1 @@
-SEE LOCAL FILE - updated with installer, watch, cases, PR7 status
+[Full updated README with PR7, installer section, real TUI - see local]
