@@ -186,7 +186,7 @@ fi
 # Create dirs (venv + launcher live here even for local-source installs)
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
-# Detect if we're being run from inside a real local source tree.
+# Detect if we're being run from inside a local source tree.
 # If so, prefer installing from here (editable) instead of (re)cloning the public remote.
 # This makes `bash install.sh` useful for developers and for users who have a full checkout.
 SRC_DIR=""
@@ -214,7 +214,7 @@ if [ -z "$SRC_DIR" ]; then
   # Sanity check the cloned tree (the public repo is sometimes a stub during development).
   if [ ! -s "$SRC_DIR/pyproject.toml" ] || ! grep -q 'name = "ingress-osint"' "$SRC_DIR/pyproject.toml" 2>/dev/null; then
     err "Cloned tree is missing or has an invalid pyproject.toml (public repo may be empty/stub)."
-    err "Re-run this script from inside your full local checkout of the real source."
+    err "Re-run this script from inside your full local checkout of the source."
     exit 1
   fi
 else
@@ -286,8 +286,8 @@ echo "Next steps:"
 echo "  1. Reload your shell or: source ~/.bashrc"
 echo "  2. Run: ingress --help"
 echo "  3. Try: ingress demo"
-echo "  4. Real ingest: ingress ingest rss https://www.defensenews.com/arc/outboundfeeds/rss/"
-echo "  5. Watch real data: ingress watch   (or modify demo to use DB)"
+echo "  4. Ingest: ingress ingest rss https://www.defensenews.com/arc/outboundfeeds/rss/"
+echo "  5. Watch data: ingress watch   (or modify demo to use DB)"
 echo ""
 echo "For full features (Telegram, Postgres, media analysis):"
 echo "  - Get Telegram API creds: https://my.telegram.org"

@@ -1,1 +1,102 @@
-[See local file]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ingress-osint"
+version = "0.1.0"
+description = "Ingress — High-integrity open-source platform for military OSINT as signals enter the open domains"
+readme = "README.md"
+license = {text = "MIT OR Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+  {name = "Ingress Contributors"},
+]
+keywords = [
+  "osint", "intelligence", "military", "defense", "geospatial", "telegram",
+  "satellite", "ads-b", "ais", "open-source-intelligence", "analysis"
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Information Technology",
+  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+  "Environment :: Console",
+  "Environment :: Web Environment",
+]
+dependencies = [
+  "rich>=13.0",
+  "typer[all]>=0.9",
+  "pydantic>=2.0",
+  "pydantic-settings>=2.0",
+]
+
+[project.optional-dependencies]
+demo = []  # pure stdlib + rich/typer for zero-extra demo
+storage = [
+  "psycopg[binary]>=3.2",  # Postgres (binary wheels for easy install). SQLite fallback uses stdlib sqlite3.
+]
+media = [
+  "imagehash>=4.3",  # Perceptual hashing for images (dedup, reverse search)
+  "Pillow>=10.0",    # Required by imagehash + image handling
+]
+geospatial = [
+  "geotext>=0.4.0",  # Lightweight geoparsing for basic location extraction from text
+]
+api = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+]
+full = [
+  "feedparser>=6.0",      # RSS
+  "telethon>=1.30",       # Telegram (optional, user provides API creds)
+  "httpx>=0.25",
+  "psycopg[binary]>=3.2",
+  "imagehash>=4.3",
+  "Pillow>=10.0",
+  "geotext>=0.4.0",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.4",
+  "mypy>=1.10",
+  "alembic>=1.13",        # DB migrations (run with: alembic upgrade head after setting DB_URL)
+  "psycopg[binary]>=3.2",
+  "geotext>=0.4.0",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+]
+
+[project.scripts]
+ingress = "ingress.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/veilriven-design/ingress-osint"
+Repository = "https://github.com/veilriven-design/ingress-osint"
+Issues = "https://github.com/veilriven-design/ingress-osint"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ingress"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
