@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ingress Web Console</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="side-rail" aria-label="Ingress navigation">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">IG</div>
+          <div>
+            <h1>Ingress</h1>
+            <p>Open-domain signal workbench</p>
+          </div>
+        </div>
+
+        <nav class="target-nav" aria-label="Target focus">
+          <button class="target-tab active" data-target="comprehensive" type="button">Comprehensive</button>
+          <button class="target-tab" data-target="iran" type="button">Iran</button>
+          <button class="target-tab" data-target="russia" type="button">Russia</button>
+          <button class="target-tab" data-target="china" type="button">China</button>
+        </nav>
+
+        <section class="rail-section" aria-labelledby="legend-title">
+          <h2 id="legend-title">Criticality</h2>
+          <div class="legend-list">
+            <div><span class="legend-dot high"></span><strong>High</strong><small>Kinetic, missile, drone, nuclear, Taiwan, Hormuz</small></div>
+            <div><span class="legend-dot elevated"></span><strong>Elevated</strong><small>Military units, equipment, exercises, buildup</small></div>
+            <div><span class="legend-dot context"></span><strong>Context</strong><small>Corroborated or high-confidence context</small></div>
+            <div><span class="legend-dot routine"></span><strong>Routine</strong><small>Lower-priority retained context</small></div>
+          </div>
+        </section>
+
+        <section class="rail-section commands" aria-labelledby="commands-title">
+          <h2 id="commands-title">Operator Actions</h2>
+          <button id="seedSample" class="command-button" type="button">Seed local sample</button>
+          <button id="copyLive" class="command-button secondary" type="button">Copy live command</button>
+          <button id="copyIngest" class="command-button secondary" type="button">Copy ingest command</button>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyeline">Local SQLite + JSONL audit surface</p>
+            <h2 id="viewTitle">Comprehensive Military Scanner</h2>
+          </div>
+          <div class="toolbar" aria-label="Dashboard controls">
+            <label class="search-box">
+              <span>Search</span>
+              <input id="searchInput" type="search" placeholder="source, term, location..." autocomplete="off" />
+            </label>
+            <button id="refreshNow" class="icon-button" type="button" title="Refresh now" aria-label="Refresh now">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 0 1-13.66 5.66M4 12A8 8 0 0 1 17.66 6.34"/><path d="M20 5v6h-6M4 19v-6h6"/></svg>
+            </button>
+            <label class="toggle">
+              <input id="autoRefresh" type="checkbox" />
+              <span>Auto</span>
+            </label>
+          </div>
+        </header>
+
+        <section class="metrics-strip" aria-label="Operational summary">
+          <div class="metric"><span>Signals</span><strong id="metricSignals">0</strong></div>
+          <div class="metric"><span>Artifacts</span><strong id="metricArtifacts">0</strong></div>
+          <div class="metric"><span>Sources</span><strong id="metricSources">0</strong></div>
+          <div class="metric"><span>Updated</span><strong id="metricUpdated">--</strong></div>
+        </section>
+
+        <section class="audit-band" aria-label="Audit status">
+          <div>
+            <strong id="auditName">No JSONL audit log yet</strong>
+            <span id="auditMeta">Run watch or seed local sample data to populate the dashboard.</span>
+          </div>
+          <code id="dbUrl">sqlite:///./data/ingress.db</code>
+        </section>
+
+        <section class="content-grid">
+          <div class="signal-panel">
+            <div class="panel-heading">
+              <h3>Recent Signals</h3>
+              <span id="resultCount">0 shown</span>
+            </div>
+            <div class="table-wrap">
+              <table class="signal-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>!</th>
+                    <th>C</th>
+                    <th>Source</th>
+                    <th>Signal</th>
+                    <th>Key Terms</th>
+                    <th>Conf</th>
+                    <th>Status</th>
+                    <th>Link</th>
+                  </tr>
+                </thead>
+                <tbody id="signalsBody">
+                  <tr><td colspan="9" class="empty-state">Loading local signals...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <aside class="detail-panel" aria-label="Selected signal detail">
+            <div class="panel-heading">
+              <h3>Signal Detail</h3>
+              <span id="detailTarget">No selection</span>
+            </div>
+            <div id="detailBody" class="detail-empty">
+              Select a row to inspect provenance, criticality reasoning, and raw source reference.
+            </div>
+          </aside>
+        </section>
+
+        <section class="bottom-grid" aria-label="Summary panels">
+          <div class="summary-panel">
+            <div class="panel-heading"><h3>Country Distribution</h3></div>
+            <div id="countryBars" class="bar-list"></div>
+          </div>
+          <div class="summary-panel">
+            <div class="panel-heading"><h3>Source Activity</h3></div>
+            <div id="sourceList" class="rank-list"></div>
+          </div>
+          <div class="summary-panel">
+            <div class="panel-heading"><h3>Observed Terms</h3></div>
+            <div id="termList" class="term-cloud"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/assets/app.js" type="module"></script>
+  </body>
+</html>

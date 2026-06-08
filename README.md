@@ -76,6 +76,15 @@ ingress demo
 ingress demo --run-seconds 25
 ```
 
+Run the web application:
+
+```bash
+uvicorn ingress.api:app --host 127.0.0.1 --port 8765
+open http://127.0.0.1:8765
+```
+
+The web console reads the same SQLite store as the CLI, shows target tabs for Comprehensive/Iran/Russia/China, exposes clickable source links, renders criticality colors with recorded reasons, and includes a local sample-data button for smoke testing. Collection remains operator-driven through the CLI commands shown in the app.
+
 Ingest a public RSS feed:
 
 ```bash

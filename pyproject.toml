@@ -84,6 +84,9 @@ Issues = "https://github.com/veilriven-design/ingress-osint"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ingress"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/ingress/web" = "ingress/web"
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
