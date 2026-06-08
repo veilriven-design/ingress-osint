@@ -56,6 +56,48 @@ class IngestRequest(BaseModel):
     url: str | None = Field(None, examples=["https://example.com/feed.xml"])
 
 
+def _sample_network_records() -> list[dict[str, Any]]:
+    stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return [
+        {
+            "timestamp": stamp,
+            "protocol": "tcp",
+            "remote_domain": "api.chinamil.com.cn",
+            "remote_port": 443,
+            "process": "sample-browser",
+            "state": "observed",
+            "telemetry_source": "web-console-sample",
+            "sni": "api.chinamil.com.cn",
+            "ja3": "e7d705a3286e19ea42f587b344ee6865",
+            "bytes_sent": 1280,
+            "bytes_received": 8742,
+            "duration_ms": 1240,
+        },
+        {
+            "timestamp": stamp,
+            "protocol": "udp",
+            "remote_domain": "updates.mil.ru",
+            "remote_port": 53,
+            "process": "sample-resolver",
+            "state": "dns-query",
+            "telemetry_source": "web-console-sample",
+            "dns_query": "updates.mil.ru",
+            "qtype_name": "A",
+        },
+        {
+            "timestamp": stamp,
+            "protocol": "tcp",
+            "remote_domain": "www.tasnimnews.com",
+            "remote_port": 443,
+            "process": "sample-fetch",
+            "state": "observed",
+            "telemetry_source": "web-console-sample",
+            "http_host": "www.tasnimnews.com",
+            "tls_sni": "www.tasnimnews.com",
+        },
+    ]
+
+
 def _safe_metadata(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
@@ -224,10 +266,12 @@ def _dashboard_payload(target: str, limit: int, db_url: str | None) -> dict[str,
         "sample": f"ingress ingest sample --db-url {url}",
         "watch_live": "ingress watch --live --db-url " + url,
         "target_ingest": "ingress ingest target --iran --russia --china --db-url " + url,
+        "network_monitor": "ingress monitor network --db-url " + url,
     }
     if target_key != "comprehensive":
         commands["watch_live"] = f"ingress watch --live --{target_key} --db-url {url}"
         commands["target_ingest"] = f"ingress ingest target --{target_key} --db-url {url}"
+        commands["network_monitor"] = f"ingress monitor network --{target_key} --db-url {url}"
 
     storage_counts = get_counts(url)
     return {
@@ -248,6 +292,81 @@ def _dashboard_payload(target: str, limit: int, db_url: str | None) -> dict[str,
         },
         "commands": commands,
         "signals": signals,
+    }
+
+
+def _network_payload(target: str, limit: int, db_url: str | None) -> dict[str, Any]:
+    url = db_url or get_db_url()
+    ensure_schema(url)
+    target_key = target if target in TARGETS else "comprehensive"
+    targets = _target_list(target_key)
+    rows = get_recent_artifacts(max(limit * 5, 100), url)
+    observations: list[dict[str, Any]] = []
+    domain_counts: Counter[str] = Counter()
+    protocol_counts: Counter[str] = Counter()
+    port_counts: Counter[str] = Counter()
+    process_counts: Counter[str] = Counter()
+
+    for row in rows:
+        source_type = str(row.get("source_type") or "")
+        content_type = str(row.get("content_type") or "")
+        if source_type != "network_telemetry" and content_type != "network_telemetry":
+            continue
+        signal = _dashboard_signal(row, targets)
+        if signal is None:
+            continue
+        meta = signal.get("metadata") or {}
+        network = {
+            "remote_host": meta.get("remote_host"),
+            "remote_domain": meta.get("remote_domain"),
+            "remote_port": meta.get("remote_port"),
+            "local_host": meta.get("local_host"),
+            "local_port": meta.get("local_port"),
+            "protocol": meta.get("protocol"),
+            "process": meta.get("process"),
+            "state": meta.get("state"),
+            "matched_network_indicators": meta.get("matched_network_indicators") or [],
+            "schema": meta.get("compatibility_schema"),
+            "enriched": meta.get("enriched"),
+            "ja3": meta.get("ja3") or (meta.get("enriched") or {}).get("ja3"),
+            "dns_query": meta.get("dns_query") or (meta.get("enriched") or {}).get("dns_query"),
+            "bytes": {
+                "sent": (meta.get("enriched") or {}).get("bytes_sent"),
+                "received": (meta.get("enriched") or {}).get("bytes_received"),
+            },
+        }
+        signal["network"] = network
+        observations.append(signal)
+        domain_counts.update([str(network.get("remote_domain") or network.get("remote_host") or "unknown")])
+        protocol_counts.update([str(network.get("protocol") or "unknown")])
+        port_counts.update([str(network.get("remote_port") or "unknown")])
+        process_counts.update([str(network.get("process") or "unknown")])
+        if len(observations) >= limit:
+            break
+
+    return {
+        "status": "ok",
+        "version": __version__,
+        "target": target_key,
+        "target_label": TARGET_LABELS[target_key],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "db_url": url,
+        "summary": {
+            "observations": len(observations),
+            "domains": domain_counts.most_common(10),
+            "protocols": protocol_counts.most_common(),
+            "remote_ports": port_counts.most_common(10),
+            "processes": process_counts.most_common(10),
+        },
+        "commands": {
+            "monitor_network": (
+                f"ingress monitor network --{target_key} --db-url {url}"
+                if target_key != "comprehensive"
+                else f"ingress monitor network --db-url {url}"
+            ),
+            "import_jsonl": f"ingress monitor network --input telemetry.jsonl --db-url {url}",
+        },
+        "observations": observations,
     }
 
 
@@ -347,6 +466,43 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         try:
             return _dashboard_payload(target, limit, db_url)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/api/network")
+    def network(
+        target: str = Query("comprehensive", pattern="^(comprehensive|iran|russia|china)$"),
+        limit: int = Query(60, ge=1, le=250),
+        db_url: str | None = Query(None),
+    ) -> dict[str, Any]:
+        try:
+            return _network_payload(target, limit, db_url)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/api/network/sample")
+    def seed_network_sample(
+        target: str = Query("comprehensive", pattern="^(comprehensive|iran|russia|china)$"),
+        db_url: str | None = Query(None),
+    ) -> dict[str, int | str]:
+        from .collectors.network import NetworkTelemetryCollector
+
+        url = db_url or get_db_url()
+        target_key = target if target in TARGETS else "comprehensive"
+        try:
+            ensure_schema(url)
+            collector = NetworkTelemetryCollector(targets=_target_list(target_key))
+            artifacts = collector.collect_from_records(_sample_network_records())
+            inserted_artifacts = 0
+            for artifact in artifacts:
+                if insert_artifact(artifact, url):
+                    inserted_artifacts += 1
+            return {
+                "status": "ok",
+                "target": target_key,
+                "parsed_artifacts": len(artifacts),
+                "inserted_artifacts": inserted_artifacts,
+            }
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 

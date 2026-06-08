@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import html as html_lib
+import json
 import re
 import urllib.request
 from datetime import datetime, timezone
@@ -232,5 +233,139 @@ class RSSCollector:
                 except Exception:
                     pass
                 artifacts.append(art)
+
+        return artifacts
+
+    def collect_from_file(self, path: str | Path, *, format: str | None = None, limit: int | None = None) -> list[Artifact]:
+        """
+        Ingest RSS/Atom content from a local file instead of live fetch.
+
+        Supports:
+          - Native .xml / .atom / .rss files (parsed directly with feedparser)
+          - Pre-extracted JSONL of entry dicts (for archived or custom collection systems)
+          - format="xml" or format="jsonl" to force
+
+        This allows Ingress to act as an analysis platform for RSS data collected
+        by external authorized tools, archives, or other sensors.
+        """
+        p = Path(path)
+        fmt = (format or "").lower()
+
+        if p.suffix.lower() in {".xml", ".atom", ".rss"} or fmt in {"xml", "atom", "rss"}:
+            # Treat as local feed XML
+            self.feed_urls = [str(p)]  # _parse_feed handles local paths
+            return self.collect(limit=limit)
+
+        if fmt == "jsonl" or p.suffix == ".jsonl":
+            return self._collect_from_jsonl_entries(p, limit=limit)
+
+        # Default: try as local XML first
+        if p.exists():
+            try:
+                self.feed_urls = [str(p)]
+                return self.collect(limit=limit)
+            except Exception:
+                pass
+
+        # Fallback to JSONL
+        return self._collect_from_jsonl_entries(p, limit=limit)
+
+    def _collect_from_jsonl_entries(self, path: Path, limit: int | None = None) -> list[Artifact]:
+        """Parse a JSONL file where each line is a dict resembling a feed entry."""
+        if feedparser is None:
+            raise RuntimeError("RSS ingest requires feedparser for some paths.")
+        records: list[dict[str, Any]] = []
+        source_path = path
+        try:
+            with source_path.open(encoding="utf-8") as fh:
+                for line_number, line in enumerate(fh, start=1):
+                    if limit is not None and len(records) >= limit:
+                        break
+                    text = line.strip()
+                    if not text:
+                        continue
+                    try:
+                        entry = json.loads(text)
+                    except json.JSONDecodeError as exc:
+                        self.diagnostics.append(f"{source_path}:{line_number}: invalid JSON: {exc}")
+                        continue
+                    if isinstance(entry, dict):
+                        records.append(entry)
+        except Exception as exc:
+            self.diagnostics.append(f"Failed to read {source_path}: {exc}")
+            return []
+
+        # Temporarily treat records as feed entries
+        artifacts: list[Artifact] = []
+        source = self._make_source(str(source_path))
+        for entry in records:
+            if limit is not None and len(artifacts) >= limit:
+                break
+            # Reuse much of the entry processing logic
+            link = entry.get("link") or entry.get("id") or entry.get("url")
+            title = _clean_text(entry.get("title", ""))
+            summary = _clean_text(entry.get("summary", "") or entry.get("description", "") or entry.get("text", ""))
+            text = (title + "\n\n" + summary).strip() if title or summary else (link or "")
+
+            matched_keywords: list[str] = []
+            if self.keywords:
+                text_lower = _normalize_keyword_text(text + " " + title)
+                matched_keywords = [kw for kw in self.keywords if _keyword_matches(kw, text_lower)]
+                if not matched_keywords:
+                    continue
+
+            canonical = f"{link}|{title}|{summary[:300]}".encode("utf-8", errors="ignore")
+            content_hash = hashlib.sha256(canonical).hexdigest()
+
+            # Try to parse timestamp
+            ts = datetime.now(timezone.utc)
+            for key in ("published", "updated", "date", "timestamp"):
+                val = entry.get(key)
+                if val:
+                    try:
+                        if isinstance(val, (int, float)):
+                            ts = datetime.fromtimestamp(float(val), tz=timezone.utc)
+                        else:
+                            ts = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                        break
+                    except Exception:
+                        pass
+
+            prov = ProvenanceEntry(
+                source_id=source.id,
+                source_type=SourceType.RSS,
+                url_or_id=link,
+                fetched_at=datetime.now(timezone.utc),
+                content_hash=content_hash,
+                collector="rss-collector",
+                collector_version="0.2.0",
+                tos_compliant=True,
+            )
+
+            art = Artifact(
+                source=source,
+                provenance=[prov],
+                content_type="text",
+                raw_ref=link,
+                content_hash=content_hash,
+                fetched_at=ts,
+                text=text or None,
+                metadata={
+                    "feed_title": entry.get("feed_title") or getattr(getattr(self, '_last_feed', None), 'title', None),
+                    "entry_id": entry.get("id"),
+                    "tags": entry.get("tags", []),
+                    "target_keywords": self.keywords,
+                    "matched_keywords": matched_keywords,
+                    "source_file": str(source_path),
+                },
+            )
+            try:
+                from ..geoparser import geoparse
+                gp = geoparse(text or title)
+                if gp:
+                    art.metadata["geoparsed_places"] = gp
+            except Exception:
+                pass
+            artifacts.append(art)
 
         return artifacts

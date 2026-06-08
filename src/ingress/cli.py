@@ -20,6 +20,7 @@ import threading
 import time
 from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
@@ -501,7 +502,7 @@ def watch_terms(metadata: dict[str, Any], text: str, targets: list[str]) -> list
     )
     if target_terms:
         return target_terms
-    for key in ("geoparsed_places", "entities", "matched_keywords"):
+    for key in ("geoparsed_places", "entities", "matched_keywords", "matched_network_indicators"):
         values = metadata.get(key)
         if isinstance(values, list):
             terms = [value for value in values if isinstance(value, str) and value]
@@ -1577,119 +1578,595 @@ def doctor(
         console.print("[yellow]Ingress can still run with reduced functionality where optional checks are missing.[/]")
 
 
+# --------------------------- Network Monitor ---------------------------
+
+monitor_app = typer.Typer(
+    help="Ingest network telemetry (local snapshots or imported from authorized sensors/pcaps/flows) for OSINT analysis."
+)
+app.add_typer(monitor_app, name="monitor")
+
+
+def _network_monitor_targets(iran: bool, russia: bool, china: bool) -> list[str]:
+    targets = []
+    if iran:
+        targets.append("iran")
+    if russia:
+        targets.append("russia")
+    if china:
+        targets.append("china")
+    return targets or ["iran", "russia", "china"]
+
+
+def _sample_network_records() -> list[dict[str, Any]]:
+    stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return [
+        {
+            "timestamp": stamp,
+            "protocol": "tcp",
+            "remote_domain": "api.chinamil.com.cn",
+            "remote_port": 443,
+            "process": "sample-browser",
+            "state": "observed",
+            "telemetry_source": "synthetic-network-sample",
+            # Richer fields typical of authorized packet/flow/TLS analysis.
+            # These demonstrate ingress of metadata (no actual payloads here).
+            "sni": "api.chinamil.com.cn",
+            "ja3": "e7d705a3286e19ea42f587b344ee6865",
+            "bytes_sent": 1280,
+            "bytes_received": 8742,
+            "duration_ms": 1240,
+        },
+        {
+            "timestamp": stamp,
+            "protocol": "udp",
+            "remote_domain": "updates.mil.ru",
+            "remote_port": 53,
+            "process": "sample-resolver",
+            "state": "dns-query",
+            "telemetry_source": "synthetic-network-sample",
+            "dns_query": "updates.mil.ru",
+            "qtype_name": "A",
+        },
+        {
+            "timestamp": stamp,
+            "protocol": "tcp",
+            "remote_domain": "www.tasnimnews.com",
+            "remote_port": 443,
+            "process": "sample-fetch",
+            "state": "observed",
+            "telemetry_source": "synthetic-network-sample",
+            "http_host": "www.tasnimnews.com",
+            "tls_sni": "www.tasnimnews.com",
+        },
+    ]
+
+
+def _network_artifact_to_sighting(artifact: Any) -> Any | None:
+    """Turn a high-value network telemetry artifact into a basic Sighting for fusion."""
+    try:
+        from .models import Sighting, VerificationStatus, ConfidenceLevel
+
+        meta = artifact.metadata or {}
+        remote = meta.get("remote_domain") or meta.get("remote_host")
+        if not remote:
+            return None
+
+        # Only auto-create sighting for focused military targets
+        targets = meta.get("target_countries") or []
+        if not targets:
+            return None
+
+        return Sighting(
+            artifact_ids=[str(artifact.id)],
+            timestamp=artifact.fetched_at,
+            location_name=str(remote),
+            entities=[str(remote), meta.get("protocol", ""), meta.get("process", "")],
+            description=f"Network observation to {remote} ({meta.get('protocol', '')})",
+            confidence=0.55,
+            confidence_level=ConfidenceLevel.MEDIUM,
+            verification_status=VerificationStatus.UNVERIFIED,
+            metadata={"source": "network-telemetry-auto", "remote": remote},
+        )
+    except Exception:
+        return None
+
+
+def _ingest_pcap_metadata(
+    pcap_path: Path,
+    collector: Any,
+    *,
+    limit: int | None = None,
+) -> list[Any]:
+    """
+    Extract network metadata (endpoints, ports, SNI, DNS queries, HTTP host, etc.)
+    from a provided pcap/pcapng file using tshark (if available).
+
+    This is an *ingestion* helper only. It does not capture traffic itself.
+    The operator must have obtained the pcap through authorized means on systems
+    they are allowed to monitor. Payload content is not extracted or stored.
+    """
+    import subprocess
+
+    if not shutil.which("tshark"):
+        console.print("[red]tshark not found in PATH.[/] Install Wireshark command-line tools to import .pcap files.")
+        console.print("[dim]Alternatively, convert the pcap to JSONL metadata using your own tools and use --input on the resulting .jsonl.[/]")
+        return []
+
+    console.print(f"[cyan]Extracting metadata from pcap[/] {pcap_path} (tshark)")
+
+    # Use tshark to produce a simple text table of useful metadata fields only.
+    # We deliberately avoid -x (hex dump) and limit to non-payload fields.
+    cmd = [
+        "tshark", "-r", str(pcap_path),
+        "-T", "fields",
+        "-e", "frame.time_epoch",
+        "-e", "ip.src",
+        "-e", "ip.dst",
+        "-e", "tcp.srcport",
+        "-e", "tcp.dstport",
+        "-e", "udp.srcport",
+        "-e", "udp.dstport",
+        "-e", "dns.qry.name",
+        "-e", "tls.handshake.extensions_server_name",
+        "-e", "http.host",
+        "-E", "header=y",
+        "-E", "separator=|",
+        "-E", "occurrence=f",
+    ]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+    except Exception as exc:
+        console.print(f"[red]tshark failed:[/] {exc}")
+        return []
+
+    if proc.returncode != 0 and not proc.stdout:
+        console.print(f"[red]tshark error:[/] {proc.stderr.strip()[:500]}")
+        return []
+
+    records: list[dict[str, Any]] = []
+    lines = proc.stdout.strip().splitlines()
+    if not lines:
+        return []
+
+    # First line is header
+    header = lines[0].split("|")
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        values = line.split("|")
+        if len(values) != len(header):
+            continue
+        row = dict(zip(header, values))
+
+        rec: dict[str, Any] = {
+            "timestamp": row.get("frame.time_epoch") or None,
+            "remote_host": row.get("ip.dst") or None,
+            "remote_port": row.get("tcp.dstport") or row.get("udp.dstport") or None,
+            "local_host": row.get("ip.src") or None,
+            "local_port": row.get("tcp.srcport") or row.get("udp.srcport") or None,
+            "protocol": "tcp" if row.get("tcp.dstport") else ("udp" if row.get("udp.dstport") else "ip"),
+            "dns_query": row.get("dns.qry.name") or None,
+            "sni": row.get("tls.handshake.extensions_server_name") or None,
+            "http_host": row.get("http.host") or None,
+            "telemetry_source": f"tshark:{pcap_path.name}",
+        }
+
+        # Clean up empty strings
+        rec = {k: v for k, v in rec.items() if v not in (None, "", "0")}
+
+        if rec.get("remote_host") or rec.get("dns_query") or rec.get("sni") or rec.get("http_host"):
+            records.append(rec)
+            if limit is not None and len(records) >= limit:
+                break
+
+    if not records:
+        console.print("[yellow]No usable metadata records extracted from pcap.[/]")
+        return []
+
+    console.print(f"[dim]Extracted {len(records)} metadata records from pcap.[/]")
+    artifacts: list[Any] = collector.collect_from_records(records, limit=limit)
+    return artifacts
+
+
+def _print_network_artifacts(artifacts: list[Any], *, limit: int = 8) -> None:
+    table = Table(title="Network Telemetry", box=box.SIMPLE)
+    table.add_column("Time")
+    table.add_column("Target")
+    table.add_column("Remote")
+    table.add_column("Proto")
+    table.add_column("Process")
+    table.add_column("Notes", style="dim")
+    for artifact in artifacts[:limit]:
+        meta = artifact.metadata or {}
+        remote = meta.get("remote_domain") or meta.get("remote_host") or "unknown"
+        port = meta.get("remote_port")
+        if port is not None:
+            remote = f"{remote}:{port}"
+        enrich = meta.get("enriched") or {}
+        notes_parts: list[str] = []
+        if enrich.get("ja3") or enrich.get("ja3s"):
+            notes_parts.append("ja3")
+        if any(enrich.get(k) for k in ("bytes_sent", "bytes_received", "bytes")):
+            notes_parts.append("bytes")
+        if enrich.get("dns_query"):
+            notes_parts.append("dns")
+        if enrich.get("http_host") or enrich.get("sni"):
+            notes_parts.append("tls/http")
+        if enrich.get("duration") or enrich.get("duration_ms"):
+            notes_parts.append("dur")
+        notes = ",".join(notes_parts) if notes_parts else ""
+        table.add_row(
+            artifact.fetched_at.isoformat()[:19],
+            ", ".join(meta.get("target_countries") or []) or "-",
+            str(remote)[:40],
+            str(meta.get("protocol") or "-"),
+            str(meta.get("process") or "-")[:24],
+            notes,
+        )
+    console.print(table)
+
+
+@monitor_app.command("network")
+def monitor_network(
+    input_path: str | None = typer.Option(
+        None,
+        "--input",
+        "-i",
+        help="Import network telemetry from file (JSONL, Zeek logs, Suricata EVE, tshark -T json, or .pcap via tshark).",
+    ),
+    input_format: str | None = typer.Option(
+        None,
+        "--format",
+        help="Force input format: jsonl, zeek, suricata, tshark-json (auto-detected if omitted).",
+    ),
+    db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL"),
+    iran: bool = typer.Option(False, "--iran", help="Focus on Iranian open-system domains."),
+    russia: bool = typer.Option(False, "--russia", help="Focus on Russian open-system domains."),
+    china: bool = typer.Option(False, "--china", help="Focus on Chinese open-system domains."),
+    include_unfocused: bool = typer.Option(
+        False,
+        "--include-unfocused",
+        help="Also store public-domain network observations that do not match Iran/Russia/China.",
+    ),
+    network_targets_file: str | None = typer.Option(
+        None,
+        "--network-targets-file",
+        help="JSON file with extra domains to match for Iran/Russia/China (keys: 'iran', 'russia', 'china').",
+    ),
+    create_sightings: bool = typer.Option(
+        False,
+        "--create-sightings",
+        help="Auto-create Sightings for high-value focused network observations (makes them first-class in the workbench).",
+    ),
+    sample: bool = typer.Option(False, "--sample", help="Use deterministic synthetic network telemetry."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print parsed observations without writing SQLite."),
+    limit: int = typer.Option(100, "--limit", min=1, max=500, help="Maximum observations to parse."),
+    interval: float = typer.Option(5.0, "--interval", min=1.0, help="Seconds between local snapshots."),
+    run_seconds: float = typer.Option(
+        0.0,
+        "--run-seconds",
+        min=0.0,
+        help="Poll local snapshots for this long; 0 takes one snapshot.",
+    ),
+    save_telemetry: str | None = typer.Option(
+        None,
+        "--save-telemetry",
+        help="Append *all* public connections seen (bypassing focus) to this JSONL during local snapshots. Great for building a large authorized dataset over time for later --input re-ingest.",
+    ),
+) -> None:
+    """
+    Ingest network-derived signals from authorized sources into the OSINT workbench.
+
+    Designed as a powerful analysis & fusion platform for metadata from:
+    - Local snapshots (lsof/ss/netstat)
+    - Zeek (conn/dns/ssl/http logs)
+    - Suricata EVE JSON
+    - tshark JSON or pcaps (metadata only)
+    - Custom JSONL from endpoint agents, commercial sensors, authorized flow systems, legal intercept outputs, etc.
+
+    Supports rich fields (SNI, JA3/JA3s, DNS queries, HTTP host, byte counts, duration, fingerprints...)
+    and makes network artifacts first-class (use --create-sightings, --save-telemetry for continuous
+    authorized collection, --network-targets-file for extra infrastructure intel).
+
+    Ingress itself never performs capture or probing. You are responsible for authorization
+    and legality of all source data. See README "Legal And Ethical Use".
+    """
+    from .collectors.network import NetworkTelemetryCollector
+    from .config import get_db_url
+    from .storage import ensure_schema, insert_artifact
+
+    targets = _network_monitor_targets(iran, russia, china)
+    effective_db = db_url or get_db_url()
+    collector = NetworkTelemetryCollector(
+        targets=targets,
+        include_unfocused=include_unfocused,
+        extra_targets_file=network_targets_file,
+    )
+
+    console.print("[cyan]Network monitor[/] — ingests network-derived signals into the OSINT workbench")
+    console.print(
+        "[dim]This tool can consume metadata from packet/flow analysis performed by *you* on systems "
+        "you are authorized to monitor. Ingress itself does not capture packets, probe remote networks, "
+        "or intercept third-party traffic. You are responsible for the legality and authorization of "
+        "any data you import. See README 'Legal And Ethical Use' for liability terms.[/]"
+    )
+    console.print(f"[dim]Focus: {', '.join(targets)}[/]")
+    if not sample and not input_path:
+        console.print("[dim]Tip: plain local snapshot often finds nothing focused. Try --sample (demo) or --include-unfocused.[/]")
+        # Strong gate for local collection
+        if not typer.confirm(
+            "Confirm you are authorized to monitor network telemetry on this system and will only ingest data you have the legal right to collect",
+            default=False,
+        ):
+            console.print("[yellow]Collection aborted by operator.[/]")
+            return
+
+    artifacts: list[Any] = []
+    if sample:
+        artifacts = collector.collect_from_records(_sample_network_records(), limit=limit)
+    elif input_path:
+        from pathlib import Path as _Path
+        input_p = _Path(input_path)
+        if not input_p.exists():
+            console.print(f"[red]Input file not found:[/] {input_p}")
+            console.print("[dim]Create a JSONL file with one record per line, or point at a .pcap/.pcapng (requires tshark in PATH for metadata extraction).[/]")
+            console.print("[dim]Use --sample for a demo with richer fields.[/]")
+            return
+
+        if input_p.suffix.lower() in {".pcap", ".pcapng"}:
+            artifacts = _ingest_pcap_metadata(input_p, collector, limit=limit)
+        else:
+            artifacts = collector.collect_from_file(input_path, format=input_format, limit=limit)
+    else:
+        deadline = time.time() + run_seconds if run_seconds > 0 else None
+        raw_local_records = 0
+        while True:
+            remaining = max(0, limit - len(artifacts))
+            if remaining == 0:
+                break
+            snapshot_records = collector.collect_local_snapshot(limit=remaining)
+            raw_local_records += len(snapshot_records)
+            artifacts.extend(snapshot_records)
+            if deadline is None or time.time() >= deadline:
+                break
+            time.sleep(interval)
+        if raw_local_records > 0 and not artifacts:
+            console.print(f"[dim]Local snapshot examined {raw_local_records} public connection(s); none matched target focus.[/]")
+
+        # Pervasive collection support: save everything we saw (public connections) to JSONL
+        # so the user can build up "all possible" authorized local network telemetry over time.
+        if save_telemetry and not sample and not input_path:
+            from pathlib import Path as _Path
+            # Re-run a snapshot with include_unfocused to capture *all* public connections seen
+            broad_collector = NetworkTelemetryCollector(
+                targets=targets, include_unfocused=True
+            )
+            all_public = broad_collector.collect_local_snapshot(limit=1000)
+            if all_public:
+                save_path = _Path(save_telemetry)
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                with save_path.open("a", encoding="utf-8") as fh:
+                    for art in all_public:
+                        meta = art.metadata or {}
+                        rec = {
+                            "timestamp": art.fetched_at.isoformat(),
+                            "protocol": meta.get("protocol"),
+                            "remote_domain": meta.get("remote_domain"),
+                            "remote_host": meta.get("remote_host"),
+                            "remote_port": meta.get("remote_port"),
+                            "local_host": meta.get("local_host"),
+                            "local_port": meta.get("local_port"),
+                            "process": meta.get("process"),
+                            "state": meta.get("state"),
+                            "telemetry_source": "local-snapshot",
+                        }
+                        # include any enriched fields if present
+                        if meta.get("enriched"):
+                            rec.update(meta["enriched"])
+                        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                console.print(f"[green]Saved {len(all_public)} public connection(s) to {save_telemetry}[/]")
+
+    if collector.diagnostics:
+        console.print("[yellow]Network monitor diagnostics:[/]")
+        for item in collector.diagnostics[:8]:
+            console.print(f"[dim]  - {item}[/]")
+
+    if not artifacts:
+        if not sample and not input_path:
+            # Local snapshot path: be helpful. Plain `lsof`/`ss`/`netstat` rarely gives the domain names
+            # or SNI we need for target focus, so this is common/expected.
+            console.print("[yellow]Local network snapshot completed.[/] No public connections matched the current focus (Iran / Russia / China).")
+            console.print("[dim]This is expected on most developer machines — the snapshot sees IPs more often than the specific military domains/SNI we filter for.[/]")
+            console.print("[dim]Quick ways to see it working:[/]")
+            console.print("[dim]  ingress monitor network --sample                  # demo with richer fields (ja3, bytes, dns etc.)[/]")
+            console.print("[dim]  ingress monitor network --include-unfocused       # show *all* your current public connections[/]")
+            console.print("[dim]  ingress monitor network --input your-flows.jsonl  # import real authorized telemetry (recommended for power users)[/]")
+        else:
+            console.print("[yellow]No matching public-domain network observations found.[/]")
+            console.print("[dim]Try --sample, --include-unfocused, or --input telemetry.jsonl for a local smoke run.[/]")
+        return
+
+    _print_network_artifacts(artifacts)
+
+    if dry_run:
+        console.print(f"[dim]--dry-run: parsed {len(artifacts)} artifact(s), nothing written.[/]")
+        return
+
+    ensure_schema(effective_db)
+    stored = 0
+    sightings_created = 0
+    for artifact in artifacts:
+        try:
+            if insert_artifact(artifact, effective_db):
+                stored += 1
+                if create_sightings:
+                    sig = _network_artifact_to_sighting(artifact)
+                    if sig:
+                        from .storage import insert_sighting
+                        if insert_sighting(sig, effective_db):
+                            sightings_created += 1
+        except Exception as exc:
+            console.print(f"[red]  ! Error storing network artifact: {exc}[/]")
+
+    msg = f"[green]Stored {stored} new network telemetry artifact(s)[/] (parsed {len(artifacts)}; DB {effective_db})."
+    if sightings_created:
+        msg += f" Created {sightings_created} sighting(s)."
+    console.print(msg)
+    console.print(f"[dim]Next: ingress watch --db-url {effective_db} or GET /api/network[/]")
+
+
 # --------------------------- Ingest (PR2) ---------------------------
 
-ingest_app = typer.Typer(help="Ingest open sources into storage (RSS, future: Telegram, etc.)")
+ingest_app = typer.Typer(help="Ingest from live sources or authorized offline files/exports (RSS, Telegram, web, network telemetry, etc.) — platform for rich metadata from your sensors and archives.")
 app.add_typer(ingest_app, name="ingest")
 
 
 @ingest_app.command("rss")
 def ingest_rss(
-    url: str = typer.Argument(..., help="RSS/Atom feed URL"),
+    url: str | None = typer.Argument(None, help="RSS/Atom feed URL (omit when using --input)"),
     db_url: str | None = typer.Option(
         None,
         "--db-url",
         envvar="INGRESS_DB_URL",
         help="SQLite database URL (sqlite://...). Defaults to config / sqlite DB.",
     ),
+    input_path: str | None = typer.Option(
+        None, "--input", "-i", help="Ingest from local file (XML/Atom or JSONL of entries) for authorized offline data."
+    ),
+    format: str | None = typer.Option(None, "--format", help="Force format for --input: xml, jsonl"),
     limit: int | None = typer.Option(None, "--limit", help="Only process first N entries (debug)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Parse and show but do not write to DB"),
+    create_sightings: bool = typer.Option(
+        False, "--create-sightings", help="Auto-create Sightings for ingested items (first-class fusion citizens)."
+    ),
 ) -> None:
     """
-    Ingest an RSS/Atom feed.
+    Ingest RSS/Atom (live URL or from authorized offline files/exports).
 
-    Creates Source + Artifact records (with full provenance) for new items.
-    Deduplicates on content hash.
+    Supports live collection or ingesting rich metadata from external authorized
+    collection systems (archived feeds, scrapers, sensors, etc.).
 
-    Example:
-        ingress ingest rss https://www.defensenews.com/arc/outboundfeeds/rss/
-        INGRESS_DB_URL=sqlite:///./data/ingress.db ingress ingest rss https://...
+    Creates Source + Artifact records with full provenance. Dedups on content hash.
+    Use --create-sightings to promote items into the sighting system for better fusion.
     """
     from .collectors.rss import RSSCollector
-    from .storage import ensure_schema, insert_artifact
+    from .storage import ensure_schema, insert_artifact, insert_sighting
+    from .models import Sighting, VerificationStatus, ConfidenceLevel
 
-    console.print(f"[cyan]Ingesting RSS[/] {url}")
-
-    collector = RSSCollector(url)
-    artifacts = collector.collect()
+    if input_path:
+        console.print(f"[cyan]Ingesting RSS from file[/] {input_path}")
+        collector = RSSCollector("")  # dummy; file method handles it
+        artifacts = collector.collect_from_file(input_path, format=format, limit=limit)
+    else:
+        if not url:
+            console.print("[red]Provide a feed URL or --input <file> for offline ingestion.[/]")
+            raise typer.Exit(1)
+        console.print(f"[cyan]Ingesting RSS[/] {url}")
+        collector = RSSCollector(url)
+        artifacts = collector.collect(limit=limit)
 
     if limit:
         artifacts = artifacts[:limit]
 
     if not artifacts:
-        console.print("[yellow]No entries found (or all older than 'since').[/]")
+        console.print("[yellow]No entries found.[/]")
         for diag in collector.diagnostics[:5]:
             console.print(f"[dim]  - {diag}[/]")
         return
 
-    console.print(f"Parsed {len(artifacts)} candidate entries from feed.")
+    console.print(f"Parsed {len(artifacts)} candidate entries.")
 
     if dry_run:
         for a in artifacts[:5]:
-            console.print(f"  - {a.fetched_at} | {a.raw_ref} | { (a.text or '')[:80] }...")
+            console.print(f"  - {a.fetched_at} | {a.raw_ref} | {(a.text or '')[:80]}...")
         console.print("[dim]--dry-run: nothing written.[/]")
         return
 
-    # Ensure schema for the current SQLite storage layer.
     try:
         ensure_schema(db_url)
     except Exception as e:
         console.print(f"[yellow]ensure_schema warning: {e}[/]")
 
     stored = 0
+    sightings = 0
     for art in artifacts:
         try:
-            inserted = insert_artifact(art, db_url)
-            if inserted:
+            if insert_artifact(art, db_url):
                 stored += 1
                 prov_summary = ", ".join(p.collector for p in art.provenance)
                 console.print(f"[green]  +[/] {art.fetched_at}  {art.raw_ref or '(no link)'}  (prov: {prov_summary})")
-            # else: duplicate, silent
+                if create_sightings:
+                    try:
+                        sig = Sighting(
+                            artifact_ids=[str(art.id)],
+                            timestamp=art.fetched_at,
+                            description=(art.text or "")[:200],
+                            entities=art.metadata.get("matched_keywords", []) or [],
+                            confidence=0.6,
+                            confidence_level=ConfidenceLevel.MEDIUM,
+                            verification_status=VerificationStatus.UNVERIFIED,
+                        )
+                        if insert_sighting(sig, db_url):
+                            sightings += 1
+                    except Exception:
+                        pass
         except Exception as exc:
             console.print(f"[red]  ! Error storing artifact: {exc}[/]")
 
-    console.print(f"\n[bold]Done.[/] Stored {stored} new artifacts (out of {len(artifacts)} parsed).")
+    msg = f"\n[bold]Done.[/] Stored {stored} new artifacts (out of {len(artifacts)} parsed)."
+    if sightings:
+        msg += f" Created {sightings} sighting(s)."
+    console.print(msg)
     console.print("Use storage queries / future TUI / API to explore. Full provenance is recorded.")
 
 
 @ingest_app.command("web")
 def ingest_web(
-    url: str = typer.Argument(..., help="Public web page URL to snapshot (e.g. official mil news hub)"),
+    url: str | None = typer.Argument(None, help="Public web page URL (omit with --input)"),
     db_url: str | None = typer.Option(
         None,
         "--db-url",
         envvar="INGRESS_DB_URL",
         help="SQLite database URL. Defaults to configured.",
     ),
+    input_path: str | None = typer.Option(None, "--input", "-i", help="Ingest from local HTML/JSONL snapshot (authorized offline data)."),
+    format: str | None = typer.Option(None, "--format", help="Force format for --input: html, jsonl"),
     limit: int | None = typer.Option(None, "--limit"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch and show but do not persist"),
+    create_sightings: bool = typer.Option(False, "--create-sightings", help="Auto-create Sightings from the ingested page."),
 ) -> None:
     """
-    Ingest a single public web page as a text artifact (keyword filtering optional via target).
+    Ingest a public web page (live) or from authorized local HTML/JSONL snapshot.
 
-    Useful for public pages that do not publish reliable RSS/Atom (e.g. some official
-    English-language PLA, assessment blogs, state media homepages).
-
-    Always bounded + explicit: you name the exact public URL.
+    Part of the ingestion platform: feed data collected by other authorized tools.
     """
     from .collectors.web import WebPageCollector
-    from .storage import ensure_schema, insert_artifact
+    from .storage import ensure_schema, insert_artifact, insert_sighting
+    from .models import Sighting
 
-    console.print(f"[cyan]Ingesting web page[/] {url}")
-
-    collector = WebPageCollector(url)
-    artifacts = collector.collect()
+    if input_path:
+        console.print(f"[cyan]Ingesting web from file[/] {input_path}")
+        collector = WebPageCollector("")
+        artifacts = collector.collect_from_file(input_path, format=format, limit=limit)
+    else:
+        if not url:
+            console.print("[red]Provide URL or --input <file>.[/]")
+            raise typer.Exit(1)
+        console.print(f"[cyan]Ingesting web page[/] {url}")
+        collector = WebPageCollector(url)
+        artifacts = collector.collect()
 
     if limit:
         artifacts = artifacts[:limit]
 
     if not artifacts:
-        console.print("[yellow]No matching content extracted (or keyword filter excluded all).[/]")
-        for d in collector.diagnostics[:5]:
+        console.print("[yellow]No matching content extracted.[/]")
+        for d in getattr(collector, "diagnostics", [])[:5]:
             console.print(f"[dim]  - {d}[/]")
         return
 
-    console.print(f"Extracted {len(artifacts)} artifact(s) from page text.")
+    console.print(f"Extracted {len(artifacts)} artifact(s).")
 
     if dry_run:
         for a in artifacts[:3]:
@@ -1703,22 +2180,33 @@ def ingest_web(
         console.print(f"[yellow]ensure_schema warning: {e}[/]")
 
     stored = 0
+    sightings = 0
     for art in artifacts:
         try:
             if insert_artifact(art, db_url):
                 stored += 1
                 console.print(f"[green]  +[/] {art.raw_ref} (hash {(art.content_hash or 'n/a')[:10]})")
+                if create_sightings:
+                    try:
+                        sig = Sighting(artifact_ids=[str(art.id)], timestamp=art.fetched_at, description=(art.text or "")[:200], confidence=0.55)
+                        if insert_sighting(sig, db_url):
+                            sightings += 1
+                    except Exception:
+                        pass
         except Exception as exc:
             console.print(f"[red]  ! {exc}[/]")
 
-    console.print(f"\n[bold]Done.[/] Stored {stored} new page artifact(s).")
+    msg = f"\n[bold]Done.[/] Stored {stored} new page artifact(s)."
+    if sightings:
+        msg += f" + {sightings} sighting(s)."
+    console.print(msg)
 
 
 @ingest_app.command("telegram")
 def ingest_telegram(
-    channels: str = typer.Argument(..., help="Comma-separated public channel usernames (no @)"),
-    api_id: int | None = typer.Option(None, "--api-id", envvar="TELEGRAM_API_ID", help="From my.telegram.org"),
-    api_hash: str | None = typer.Option(None, "--api-hash", envvar="TELEGRAM_API_HASH", help="From my.telegram.org"),
+    channels: str | None = typer.Argument(None, help="Comma-separated public channel usernames (no @). Omit with --input for exports."),
+    api_id: int | None = typer.Option(None, "--api-id", envvar="TELEGRAM_API_ID", help="From my.telegram.org (live only)"),
+    api_hash: str | None = typer.Option(None, "--api-hash", envvar="TELEGRAM_API_HASH", help="From my.telegram.org (live only)"),
     keywords: str | None = typer.Option(None, "--keywords", help="Comma-separated keywords to filter messages"),
     limit: int | None = typer.Option(100, "--limit", help="Max messages per channel"),
     db_url: str | None = typer.Option(
@@ -1726,50 +2214,70 @@ def ingest_telegram(
         help="Database URL. If omitted, messages are only printed (dry-run style)."
     ),
     session: str = typer.Option("ingress_telegram", "--session", help="Telethon session file name"),
+    input_path: str | None = typer.Option(
+        None, "--input", "-i", help="Ingest from Telegram export (result.json or JSONL of messages) for authorized offline data."
+    ),
+    format: str | None = typer.Option(None, "--format", help="Force format for --input: telegram-export, jsonl"),
+    create_sightings: bool = typer.Option(
+        False, "--create-sightings", help="Auto-create Sightings for ingested messages (first-class for fusion)."
+    ),
 ) -> None:
     """
-    Ingest messages from public Telegram channels (read-only).
+    Ingest messages from public Telegram channels (live with credentials) or from
+    authorized offline exports/archives.
+
+    This makes Telegram data ingestion part of the broader platform: you can feed
+    exports from Telegram Desktop, other collectors, or sensors into the same
+    provenance, sighting, and fusion system as live ingest.
 
     SECURITY / LEGAL:
-    - Only public channels.
-    - You must obtain api_id + api_hash from https://my.telegram.org/apps
-    - First run will prompt for phone number / code to create a session (standard Telethon behavior).
-    - Store credentials securely (env vars, password manager, never commit).
-    - Respect Telegram rate limits. The collector has basic flood-wait handling.
-    - You are fully responsible for compliance with Telegram ToS.
-
-    Example:
-        TELEGRAM_API_ID=123456 TELEGRAM_API_HASH=abcdef... \\
-        ingress ingest telegram oryxspioenkop,someosint --keywords "T-72,strike" --limit 50
+    - Live mode: only public channels. Obtain api_id/api_hash from my.telegram.org.
+    - Offline mode (--input): you are responsible for having legally obtained the export.
+    - Respect rate limits and Telegram ToS.
     """
-    if not api_id or not api_hash:
-        console.print("[red]--api-id and --api-hash (or TELEGRAM_API_ID / TELEGRAM_API_HASH env) are required.[/]")
-        raise typer.Exit(1)
+    from .collectors.telegram import TelegramCollector
+    from .storage import ensure_schema, insert_artifact, insert_sighting
+    from .models import Sighting, VerificationStatus, ConfidenceLevel
 
-    channel_list = [c.strip() for c in channels.split(",") if c.strip()]
     kw_list = [k.strip() for k in (keywords or "").split(",") if k.strip()] or None
 
-    from .collectors.telegram import TelegramCollector
-    from .storage import ensure_schema, insert_artifact
+    if input_path:
+        console.print(f"[cyan]Ingesting Telegram from file[/] {input_path}")
+        collector = TelegramCollector(0, "", [], keywords=kw_list)  # dummy creds for offline
+        artifacts = collector.collect_from_file(input_path, format=format, limit=limit)
+    else:
+        if not channels:
+            console.print("[red]Provide channels or use --input for an export file.[/]")
+            raise typer.Exit(1)
+        if not api_id or not api_hash:
+            console.print("[red]--api-id and --api-hash (or env) are required for live ingest.[/]")
+            raise typer.Exit(1)
 
-    console.print(f"[cyan]Ingesting Telegram[/] channels: {channel_list}")
-    if kw_list:
-        console.print(f"  Filtering keywords: {kw_list}")
+        channel_list = [c.strip() for c in channels.split(",") if c.strip()]
+        console.print(f"[cyan]Ingesting Telegram[/] channels: {channel_list}")
+        if kw_list:
+            console.print(f"  Filtering keywords: {kw_list}")
 
-    collector = TelegramCollector(
-        api_id=api_id,
-        api_hash=api_hash,
-        channels=channel_list,
-        keywords=kw_list,
-        session_name=session,
-    )
+        collector = TelegramCollector(
+            api_id=api_id,
+            api_hash=api_hash,
+            channels=channel_list,
+            keywords=kw_list,
+            session_name=session,
+        )
 
-    try:
-        artifacts = collector.collect_sync(limit=limit)
-    except Exception as e:
-        console.print(f"[red]Collection failed:[/] {e}")
-        console.print("[dim]Common issues: bad credentials, first-time login required, or rate limit.[/]")
-        raise typer.Exit(1)
+        try:
+            artifacts = collector.collect_sync(limit=limit)
+        except Exception as e:
+            console.print(f"[red]Collection failed:[/] {e}")
+            console.print("[dim]Common issues: bad credentials, first-time login, or rate limit.[/]")
+            raise typer.Exit(1)
+
+    if not artifacts:
+        console.print("[yellow]No matching messages.[/]")
+        for d in getattr(collector, "diagnostics", [])[:5]:
+            console.print(f"[dim]  - {d}[/]")
+        return
 
     console.print(f"Collected {len(artifacts)} matching messages.")
 
@@ -1783,6 +2291,7 @@ def ingest_telegram(
 
     ensure_schema(db_url)
     stored = 0
+    sightings = 0
     for art in artifacts:
         try:
             if insert_artifact(art, db_url):
@@ -1790,10 +2299,28 @@ def ingest_telegram(
                 ch = art.metadata.get("channel")
                 mid = art.metadata.get("message_id")
                 console.print(f"[green]  +[/] t.me/{ch}/{mid}")
+                if create_sightings:
+                    try:
+                        sig = Sighting(
+                            artifact_ids=[str(art.id)],
+                            timestamp=art.fetched_at,
+                            description=(art.text or "")[:200],
+                            entities=[ch] if ch else [],
+                            confidence=0.55,
+                            confidence_level=ConfidenceLevel.MEDIUM,
+                            verification_status=VerificationStatus.UNVERIFIED,
+                        )
+                        if insert_sighting(sig, db_url):
+                            sightings += 1
+                    except Exception:
+                        pass
         except Exception as exc:
             console.print(f"[red]  ! Error: {exc}[/]")
 
-    console.print(f"\n[bold]Done.[/] Stored {stored} new artifacts.")
+    msg = f"\n[bold]Done.[/] Stored {stored} new artifacts."
+    if sightings:
+        msg += f" Created {sightings} sighting(s)."
+    console.print(msg)
 
 
 @ingest_app.command("target")

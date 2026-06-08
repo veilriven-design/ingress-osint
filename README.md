@@ -4,7 +4,7 @@ High-integrity, local-first tooling for military OSINT signals as they enter pub
 
 Ingress is for analysts, researchers, journalists, and authorized teams who need a reviewable workbench instead of ad hoc browser tabs and spreadsheets. It prioritizes provenance, bounded collection, explicit operator choices, and clear legal/ethical handling.
 
-Status: alpha, but the core CLI, SQLite storage, RSS ingest, credentialed Telegram ingest, media analysis, case notes, GeoJSON export, FastAPI read surface, local web console, and static GitHub Pages console are implemented and tested.
+Status: alpha, but the core CLI, SQLite storage, RSS ingest, credentialed Telegram ingest, authorized network telemetry monitoring, media analysis, case notes, GeoJSON export, FastAPI read surface, local web console, and static GitHub Pages console are implemented and tested.
 
 ## What Works Today
 
@@ -13,6 +13,7 @@ Status: alpha, but the core CLI, SQLite storage, RSS ingest, credentialed Telegr
 - RSS/Atom ingest with content-hash deduplication and provenance rows.
 - Telegram public-channel ingest through Telethon when `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are provided.
 - Target presets for Iran, Russia, and China that combine dozens of public RSS feeds, Telegram channels, keyword filters, and curated public web pages (from many domains across the internet).
+- Authorized network telemetry monitoring ("ingress" for network signals). Accepts local connection snapshots (lsof/ss/netstat) **or** operator-supplied JSONL records that may originate from authorized packet capture, flow exporters (Zeek, Suricata, tshark, netflow), DNS inspection, or TLS passive collection on systems the operator controls. Only endpoint/flow metadata is stored (hosts, domains, SNI, JA3 fingerprints, byte counts, durations, DNS queries, HTTP host, etc.). Ingress **never** performs packet capture, payload capture, remote probing, credential access, or third-party traffic interception itself. Raw payloads and credential material are stripped on ingest if accidentally present.
 - Media analysis for local files or URLs with EXIF, optional perceptual image hash, optional ffprobe video metadata, SHA-256 identity, entity hints, and optional storage.
 - SQLite-backed artifacts, provenance, sightings, case notes, delta listing, and GeoJSON export.
 - `ingress doctor`, `ingress status`, and `ingress ingest sample` for local verification without network access.
@@ -110,6 +111,29 @@ Ingest (or snapshot) a specific public web page for sources without RSS:
 ingress ingest web http://eng.chinamil.com.cn/ --db-url sqlite:///./data/ingress.db
 ```
 
+Monitor / ingest authorized network telemetry (the "ingress" path for network-observed signals). Ingress is designed as a strong analysis & fusion platform for rich metadata from *your* authorized collection systems (Zeek, Suricata, endpoint agents, commercial/government sensors, tshark outputs, legal intercept metadata, pcaps, etc.).
+
+```bash
+# Demo with richer fields (JA3, bytes, DNS, SNI, etc.)
+ingress monitor network --sample --db-url sqlite:///./data/ingress.db
+
+# Import from common authorized sensors
+ingress monitor network --input conn.log --format zeek --db-url ...
+ingress monitor network --input eve.json --format suricata --db-url ...
+ingress monitor network --input flows.json --input-format tshark-json --db-url ...
+ingress monitor network --input capture.pcap --db-url ...          # requires tshark
+
+# Long-running authorized local collection + save everything public for later analysis
+ingress monitor network --save-telemetry data/my-telemetry.jsonl --run-seconds 3600 --interval 30 --include-unfocused
+
+# Use extra target domains for better correlation
+ingress monitor network --network-targets-file my-military-domains.json --input telemetry.jsonl
+```
+
+Network records support many fields from real tools: `sni`, `ja3`, `dns_query`, `http_host`, byte counts, duration, process, etc. Use `--create-sightings` to turn high-value focused observations into first-class Sightings that participate in the rest of the workbench (watch, delta, GeoJSON, cases, API).
+
+The collector is intentionally format-flexible so serious operators can plug in data from whatever authorized systems they have. See `ingress monitor network --help` and the Legal section for authorization and liability details.
+
 Watch stored data (or live comprehensive scanner from the open internet):
 
 ```bash
@@ -172,6 +196,7 @@ Useful endpoints:
 - `GET /artifacts?db_url=sqlite:///./data/ingress.db`
 - `GET /sightings?db_url=sqlite:///./data/ingress.db`
 - `GET /api/dashboard?target=comprehensive`
+- `GET /api/network?target=comprehensive`
 - `POST /api/sample`
 - `POST /ingest` returns an explicit handoff to CLI collection so source access remains auditable.
 
@@ -187,10 +212,25 @@ Useful endpoints:
 
 Ingress is provided for legitimate open-source research, academic study, journalism, and authorized defense or national-security analysis only.
 
-- Use public data only.
-- Respect the laws of your jurisdiction and every source platform's terms.
-- Prefer APIs and explicit targeted collection.
-- Do not use this tool for unlawful surveillance or indiscriminate scraping.
+**Important:** This tool can be used with data derived from network monitoring, flow collection, or packet analysis performed by the operator on systems they own or are explicitly authorized to monitor. The authors and contributors of Ingress assume **no liability** for any use of this software in connection with:
+
+- Collection, use, or analysis of network data without proper legal authorization in the relevant jurisdiction(s).
+- Violation of computer fraud and abuse laws, wiretap laws, export controls, or national security regulations.
+- Any offensive, intrusive, or unlawful activity directed at third-party systems or foreign networks.
+
+By using Ingress you acknowledge that you are solely responsible for ensuring that all data you ingest (whether via local snapshots, imported JSONL/flow records, or pcap-derived metadata) was obtained through means you are legally authorized to employ.
+
+### Guidelines (non-exhaustive)
+- Use only on systems and networks you own or have explicit written authorization to monitor.
+- Prefer APIs, logs, and explicit targeted collection over broad or covert methods.
+- When ingesting data from packet/flow analysis tools, ensure those tools were used in compliance with applicable law and organizational policy.
+- Preserve full provenance and audit logs for any network-derived artifacts.
+- Do not use this tool for unlawful surveillance, unauthorized access, or indiscriminate collection.
+
+Ingress itself (the code in this repository) does not perform packet capture, payload interception, remote probing, or third-party traffic monitoring. Any such capabilities must come from separate, authorized tools whose output is then imported into Ingress.
+
+The presence of network telemetry features does not constitute encouragement or authorization to perform any particular form of collection.
+
 - Preserve attribution and provenance.
 - Treat model output, summaries, and fused claims as leads until verified by an analyst.
 

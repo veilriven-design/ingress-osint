@@ -74,6 +74,7 @@
 
         <section class="metrics-strip" aria-label="Operational summary">
           <div class="metric"><span>Signals</span><strong id="metricSignals">0</strong></div>
+          <div class="metric"><span>Network</span><strong id="metricNetwork">0</strong></div>
           <div class="metric"><span>Artifacts</span><strong id="metricArtifacts">0</strong></div>
           <div class="metric"><span>Sources</span><strong id="metricSources">0</strong></div>
           <div class="metric"><span>Updated</span><strong id="metricUpdated">--</strong></div>
@@ -85,6 +86,43 @@
             <span id="auditMeta">Run watch or seed local sample data to populate the dashboard.</span>
           </div>
           <code id="dbUrl">sqlite:///./data/ingress.db</code>
+        </section>
+
+        <section class="network-panel" aria-label="Network telemetry">
+          <div class="panel-heading network-heading">
+            <div>
+              <h3>Network Telemetry</h3>
+              <span id="networkResultCount">0 observations</span>
+            </div>
+            <div class="network-actions">
+              <button id="seedNetwork" class="mini-button" type="button">Seed sample</button>
+              <button id="copyNetwork" class="mini-button secondary" type="button">Copy monitor</button>
+              <button id="copyNetworkImport" class="mini-button secondary" type="button">Copy import</button>
+            </div>
+          </div>
+          <div class="network-summary-strip">
+            <div><span>Observations</span><strong id="networkCount">0</strong></div>
+            <div><span>Domains</span><strong id="networkDomains">0</strong></div>
+            <div><span>Protocols</span><strong id="networkProtocols">0</strong></div>
+            <div><span>Updated</span><strong id="networkUpdated">--</strong></div>
+          </div>
+          <div id="networkHighlights" class="network-highlights"></div>
+          <div class="network-table-wrap">
+            <table class="network-table">
+              <thead>
+                <tr>
+                  <th>Remote</th>
+                  <th>Proto</th>
+                  <th>Process</th>
+                  <th>Indicators</th>
+                  <th>Flow</th>
+                </tr>
+              </thead>
+              <tbody id="networkBody">
+                <tr><td colspan="5" class="empty-state">Loading network telemetry...</td></tr>
+              </tbody>
+            </table>
+          </div>
         </section>
 
         <section class="content-grid">

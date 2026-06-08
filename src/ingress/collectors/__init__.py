@@ -12,6 +12,7 @@ Collectors should be:
 
 from __future__ import annotations
 
+from .network import NetworkTelemetryCollector
 from .rss import RSSCollector
 from .telegram import TelegramCollector
 from .web import WebPageCollector
@@ -19,6 +20,7 @@ from .x import XCollector
 from ..targeting import get_iran_config, get_russia_config, get_china_config, get_target_config
 
 __all__ = [
+    "NetworkTelemetryCollector",
     "RSSCollector",
     "TelegramCollector",
     "WebPageCollector",

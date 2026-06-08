@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import hashlib
 import html as html_lib
+import json
 import re
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 
 try:
@@ -215,3 +217,134 @@ class WebPageCollector:
             artifacts.append(art)
 
         return artifacts
+
+    def collect_from_file(self, path: str | Path, *, format: str | None = None, limit: int | None = None) -> list[Artifact]:
+        """
+        Ingest a local HTML file or JSONL of page snapshots (authorized offline data).
+
+        Useful for archived pages, saved exports from other tools, or sensor output.
+        """
+        p = Path(path)
+        fmt = (format or "").lower()
+
+        if p.suffix.lower() in {".html", ".htm"} or fmt in {"html", "htm"}:
+            html = p.read_text(encoding="utf-8", errors="replace")
+            self.urls = ["file://" + str(p)]
+            # Reuse the live extraction shape with local HTML content.
+            title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+            title = _clean_text(title_match.group(1)) if title_match else ""
+            main = ""
+            for pat in [
+                r'<(article|main)[^>]*>(.*?)</\1>',
+                r'<div[^>]*class=["\'][^"\']*(?:content|article|post|entry|story)[^"\']*["\'][^>]*>(.*?)</div>',
+            ]:
+                m = re.search(pat, html, re.I | re.S)
+                if m:
+                    main = m.group(2) if m.lastindex and m.lastindex >= 2 else (m.group(1) or "")
+                    if main:
+                        break
+            if not main:
+                body = re.search(r"<body[^>]*>(.*?)</body>", html, re.I | re.S)
+                main = body.group(1) if body else html
+            body_text = _clean_text(main)
+            text = (title + "\n\n" + body_text).strip()
+
+            if not text:
+                return []
+
+            matched_keywords: list[str] = []
+            if self.keywords:
+                hay = _normalize_keyword_text(text + " " + title)
+                matched_keywords = [kw for kw in self.keywords if _keyword_matches(kw, hay)]
+                if not matched_keywords:
+                    return []
+
+            # Fallback simple source for file ingestion
+            source = Source(
+                id="web-file-" + p.stem,
+                name=p.name,
+                source_type=SourceType.WEB_PAGE,
+                credibility_prior=self.credibility_prior,
+                base_url=str(p),
+                config={"file": str(p), "keywords": self.keywords},
+                tos_summary=self.tos_summary,
+            )
+
+            canonical = f"web-file|{p}|{title}|{body_text[:400]}".encode("utf-8", errors="ignore")
+            content_hash = hashlib.sha256(canonical).hexdigest()
+
+            prov = ProvenanceEntry(
+                source_id=source.id,
+                source_type=SourceType.WEB_PAGE,
+                url_or_id=str(p),
+                fetched_at=datetime.now(timezone.utc),
+                content_hash=content_hash,
+                collector="web-collector",
+                collector_version="0.2.0",
+                tos_compliant=True,
+            )
+
+            art = Artifact(
+                source=source,
+                provenance=[prov],
+                content_type="text",
+                raw_ref=str(p),
+                content_hash=content_hash,
+                fetched_at=datetime.now(timezone.utc),
+                text=text[:8000],
+                metadata={
+                    "page_url": str(p),
+                    "page_title": title,
+                    "target_keywords": self.keywords,
+                    "matched_keywords": matched_keywords,
+                    "source_file": str(p),
+                },
+            )
+            try:
+                from ..geoparser import geoparse
+                gp = geoparse(text or title)
+                if gp:
+                    art.metadata["geoparsed_places"] = gp
+            except Exception:
+                pass
+            return [art]
+
+        if fmt == "jsonl" or p.suffix == ".jsonl":
+            # Similar to RSS JSONL: each line an object with url, title, text
+            arts: list[Artifact] = []
+            try:
+                with p.open(encoding="utf-8") as fh:
+                    for i, line in enumerate(fh):
+                        if limit and len(arts) >= limit:
+                            break
+                        try:
+                            obj = json.loads(line)
+                            text = obj.get("text") or obj.get("body") or ""
+                            if not text.strip():
+                                continue
+                            if self.keywords:
+                                hay = _normalize_keyword_text(text + " " + obj.get("title", ""))
+                                if not any(kw in hay for kw in [ _normalize_keyword_text(k) for k in self.keywords ]):
+                                    continue
+                            # minimal artifact
+                            url = obj.get("url") or str(p) + f"#line{i}"
+                            source = Source(id="web-jsonl", name=p.name, source_type=SourceType.WEB_PAGE, credibility_prior=0.5, base_url=url)
+                            ch = hashlib.sha256((url + text[:200]).encode()).hexdigest()
+                            arts.append(Artifact(
+                                source=source,
+                                provenance=[ProvenanceEntry(source_id=source.id, source_type=SourceType.WEB_PAGE, url_or_id=url, content_hash=ch, collector="web-file-jsonl")],
+                                content_type="text",
+                                raw_ref=url,
+                                content_hash=ch,
+                                fetched_at=datetime.now(timezone.utc),
+                                text=text[:8000],
+                                metadata={"source_file": str(p)},
+                            ))
+                        except Exception:
+                            continue
+            except Exception as exc:
+                self.diagnostics.append(f"jsonl web file error: {exc}")
+            return arts
+
+        self.diagnostics.append(f"Web file {p} not recognized as HTML or JSONL")
+        return []

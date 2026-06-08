@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = [
   "osint", "intelligence", "military", "defense", "geospatial", "telegram",
-  "satellite", "ads-b", "ais", "open-source-intelligence", "analysis"
+  "satellite", "ads-b", "ais", "network-monitoring", "open-source-intelligence", "analysis"
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",

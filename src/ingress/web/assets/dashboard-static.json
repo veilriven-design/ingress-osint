@@ -43,7 +43,8 @@
   "commands": {
     "sample": "ingress ingest sample --db-url sqlite:///./data/ingress.db",
     "watch_live": "ingress watch --live --db-url sqlite:///./data/ingress.db",
-    "target_ingest": "ingress ingest target --iran --russia --china --db-url sqlite:///./data/ingress.db"
+    "target_ingest": "ingress ingest target --iran --russia --china --db-url sqlite:///./data/ingress.db",
+    "network_monitor": "ingress monitor network --db-url sqlite:///./data/ingress.db"
   },
   "signals": [
     {

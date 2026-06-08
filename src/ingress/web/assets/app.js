@@ -3,12 +3,14 @@ const state = {
   query: "",
   termFilter: "",
   payload: null,
+  networkPayload: null,
   selectedId: null,
   timer: null,
   mode: "api",
   lastRefreshAt: null,
   lastSnapshotKey: "",
   lastSnapshotStatus: "",
+  networkError: "",
 };
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
@@ -31,6 +33,7 @@ const els = {
   detailTarget: document.querySelector("#detailTarget"),
   detailBody: document.querySelector("#detailBody"),
   metricSignals: document.querySelector("#metricSignals"),
+  metricNetwork: document.querySelector("#metricNetwork"),
   metricArtifacts: document.querySelector("#metricArtifacts"),
   metricSources: document.querySelector("#metricSources"),
   metricUpdated: document.querySelector("#metricUpdated"),
@@ -44,8 +47,18 @@ const els = {
   refreshNow: document.querySelector("#refreshNow"),
   autoRefresh: document.querySelector("#autoRefresh"),
   seedSample: document.querySelector("#seedSample"),
+  seedNetwork: document.querySelector("#seedNetwork"),
   copyLive: document.querySelector("#copyLive"),
   copyIngest: document.querySelector("#copyIngest"),
+  copyNetwork: document.querySelector("#copyNetwork"),
+  copyNetworkImport: document.querySelector("#copyNetworkImport"),
+  networkResultCount: document.querySelector("#networkResultCount"),
+  networkCount: document.querySelector("#networkCount"),
+  networkDomains: document.querySelector("#networkDomains"),
+  networkProtocols: document.querySelector("#networkProtocols"),
+  networkUpdated: document.querySelector("#networkUpdated"),
+  networkHighlights: document.querySelector("#networkHighlights"),
+  networkBody: document.querySelector("#networkBody"),
   toast: document.querySelector("#toast"),
 };
 
@@ -83,6 +96,78 @@ function signalSearchText(signal) {
   ]
     .join(" ")
     .toLowerCase();
+}
+
+function dbUrlForCommands(payload) {
+  const dbUrl = payload?.db_url;
+  return typeof dbUrl === "string" && dbUrl.startsWith("sqlite") ? dbUrl : "sqlite:///./data/ingress.db";
+}
+
+function networkCommandForTarget(target, dbUrl) {
+  const targetFlag = target === "comprehensive" ? "" : ` --${target}`;
+  return `ingress monitor network${targetFlag} --db-url ${dbUrl}`;
+}
+
+function networkImportCommand(dbUrl) {
+  return `ingress monitor network --input telemetry.jsonl --db-url ${dbUrl}`;
+}
+
+function networkSummary(observations) {
+  return {
+    observations: observations.length,
+    domains: sortedCounts(
+      observations.map((observation) => observation.network?.remote_domain || observation.network?.remote_host || "unknown"),
+      10
+    ),
+    protocols: sortedCounts(observations.map((observation) => observation.network?.protocol || "unknown")),
+    remote_ports: sortedCounts(observations.map((observation) => observation.network?.remote_port || "unknown"), 10),
+    processes: sortedCounts(observations.map((observation) => observation.network?.process || "unknown"), 10),
+  };
+}
+
+function networkSearchText(observation) {
+  const network = observation.network || {};
+  return [
+    signalSearchText(observation),
+    network.remote_host,
+    network.remote_domain,
+    network.remote_port,
+    network.local_host,
+    network.local_port,
+    network.protocol,
+    network.process,
+    network.state,
+    network.ja3,
+    network.dns_query,
+    ...(network.matched_network_indicators || []),
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+function formatBytes(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  if (number < 1024) return `${Math.round(number)} B`;
+  if (number < 1024 * 1024) return `${Math.round(number / 1024)} KB`;
+  return `${(number / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatNetworkRemote(observation) {
+  const network = observation.network || {};
+  const remote = network.remote_domain || network.remote_host || observation.raw_ref || "unknown";
+  return network.remote_port ? `${remote}:${network.remote_port}` : remote;
+}
+
+function formatNetworkFlow(network) {
+  const sent = formatBytes(network?.bytes?.sent);
+  const received = formatBytes(network?.bytes?.received);
+  const parts = [];
+  if (sent) parts.push(`sent ${sent}`);
+  if (received) parts.push(`recv ${received}`);
+  if (network?.ja3) parts.push(`ja3 ${short(network.ja3, 10)}`);
+  if (network?.dns_query) parts.push(`dns ${short(network.dns_query, 22)}`);
+  return parts.join(" / ") || "metadata";
 }
 
 function formatTime(value) {
@@ -164,6 +249,35 @@ function payloadForCurrentTarget(payload, mode, fallbackError = null) {
   };
 }
 
+function networkPayloadForCurrentTarget(payload, mode, fallbackError = null) {
+  const target = TARGET_LABELS[state.target] ? state.target : "comprehensive";
+  const dbUrl = dbUrlForCommands(state.payload || payload);
+  const rawObservations = payload?.observations || [];
+  const observations =
+    mode === "static"
+      ? rawObservations.filter((observation) => signalMatchesTarget(observation, target))
+      : rawObservations;
+  const summary = payload?.summary && mode !== "static" ? payload.summary : networkSummary(observations);
+  const commands = {
+    monitor_network:
+      payload?.commands?.monitor_network || state.payload?.commands?.network_monitor || networkCommandForTarget(target, dbUrl),
+    import_jsonl: payload?.commands?.import_jsonl || networkImportCommand(dbUrl),
+  };
+  return {
+    status: payload?.status || (fallbackError ? "degraded" : "ok"),
+    version: payload?.version || state.payload?.version || "",
+    target,
+    target_label: TARGET_LABELS[target],
+    generated_at: payload?.generated_at || state.payload?.generated_at || new Date().toISOString(),
+    db_url: payload?.db_url || state.payload?.db_url || dbUrl,
+    mode,
+    fallback_error: fallbackError?.message || "",
+    summary,
+    commands,
+    observations,
+  };
+}
+
 function setDashboardPayload(payload, mode, fallbackError = null) {
   state.mode = mode;
   state.payload = payloadForCurrentTarget(payload, mode, fallbackError);
@@ -172,6 +286,12 @@ function setDashboardPayload(payload, mode, fallbackError = null) {
     state.selectedId = state.payload.signals?.[0]?.id || null;
   }
   render();
+}
+
+function setNetworkPayload(payload, mode, fallbackError = null) {
+  state.networkPayload = networkPayloadForCurrentTarget(payload || {}, mode, fallbackError);
+  state.networkError = fallbackError?.message || "";
+  renderNetwork();
 }
 
 async function fetchJson(url) {
@@ -234,6 +354,7 @@ function refreshMessage(mode, reason, changed) {
 
 async function loadDashboard({ reason = "initial" } = {}) {
   els.signalsBody.innerHTML = '<tr><td colspan="9" class="empty-state">Loading signals...</td></tr>';
+  els.networkBody.innerHTML = '<tr><td colspan="5" class="empty-state">Loading network telemetry...</td></tr>';
   const previousSnapshotKey = state.lastSnapshotKey;
   let apiError = null;
   if (!prefersStaticSnapshot()) {
@@ -242,6 +363,7 @@ async function loadDashboard({ reason = "initial" } = {}) {
       state.lastRefreshAt = new Date().toISOString();
       state.lastSnapshotStatus = "";
       setDashboardPayload(payload, "api");
+      await loadNetworkPayload({ mode: "api" });
       return { mode: "api", changed: true, message: refreshMessage("api", reason, true) };
     } catch (error) {
       apiError = error;
@@ -264,12 +386,27 @@ async function loadDashboard({ reason = "initial" } = {}) {
           : "Auto refresh checked; no newer Pages publish yet."
         : "Snapshot loaded.";
   setDashboardPayload(payload, "static", apiError);
+  setNetworkPayload(payload.network || {}, "static", apiError);
   return { mode: "static", changed, message: refreshMessage("static", reason, changed) };
+}
+
+async function loadNetworkPayload({ mode = state.mode } = {}) {
+  if (mode !== "api" || prefersStaticSnapshot()) {
+    setNetworkPayload({}, "static");
+    return;
+  }
+  try {
+    const payload = await fetchJson(`/api/network?target=${encodeURIComponent(state.target)}&limit=60`);
+    setNetworkPayload(payload, "api");
+  } catch (error) {
+    setNetworkPayload({}, "api", error);
+  }
 }
 
 function render() {
   renderHeader();
   renderSignals();
+  renderNetwork();
   renderDetail();
   renderSummaries();
 }
@@ -286,6 +423,7 @@ function renderHeader() {
       ? "Comprehensive Military Scanner"
       : `${payload.target_label} Military Watch`;
   els.metricSignals.textContent = String(payload.summary.signals || 0);
+  els.metricNetwork.textContent = String(state.networkPayload?.summary?.observations || 0);
   els.metricArtifacts.textContent = String(payload.counts.artifacts || 0);
   els.metricSources.textContent = String(payload.summary.sources?.length || 0);
   els.metricUpdated.textContent = formatTime(payload.generated_at);
@@ -310,13 +448,96 @@ function renderHeader() {
   els.seedSample.disabled = payload.mode === "static";
   els.seedSample.title =
     payload.mode === "static" ? "Sample seeding requires the local FastAPI API." : "Seed local sample data";
+  els.seedNetwork.disabled = payload.mode === "static";
+  els.seedNetwork.title =
+    payload.mode === "static" ? "Network sample seeding requires the local FastAPI API." : "Seed local network telemetry";
+}
+
+function filteredNetworkObservations() {
+  const observations = state.networkPayload?.observations || [];
+  const q = state.query.trim().toLowerCase();
+  const activeTerm = state.termFilter.trim().toLowerCase();
+  if (!q && !activeTerm) return observations;
+  return observations.filter((observation) => {
+    const haystack = networkSearchText(observation);
+    const terms = signalTerms(observation).map((term) => term.toLowerCase());
+    const indicators = (observation.network?.matched_network_indicators || []).map((term) => String(term).toLowerCase());
+    const matchesQuery = !q || haystack.includes(q);
+    const matchesTerm =
+      !activeTerm || terms.includes(activeTerm) || indicators.includes(activeTerm) || haystack.includes(activeTerm);
+    return matchesQuery && matchesTerm;
+  });
+}
+
+function renderNetwork() {
+  const payload = state.networkPayload;
+  if (!payload) {
+    els.metricNetwork.textContent = "0";
+    return;
+  }
+  const observations = filteredNetworkObservations();
+  const summary = payload.summary || networkSummary(observations);
+  const errorSuffix = payload.fallback_error ? " / network API unavailable" : "";
+  els.metricNetwork.textContent = String(summary.observations || 0);
+  els.networkResultCount.textContent = `${observations.length} shown${errorSuffix}`;
+  els.networkCount.textContent = String(summary.observations || 0);
+  els.networkDomains.textContent = String(summary.domains?.length || 0);
+  els.networkProtocols.textContent = String(summary.protocols?.length || 0);
+  els.networkUpdated.textContent = formatTime(payload.generated_at);
+
+  const highlights = [
+    ...(summary.domains || []).slice(0, 3).map(([name, count]) => ["domain", name, count]),
+    ...(summary.protocols || []).slice(0, 2).map(([name, count]) => ["proto", name, count]),
+    ...(summary.processes || []).slice(0, 2).map(([name, count]) => ["proc", name, count]),
+  ];
+  els.networkHighlights.innerHTML = highlights.length
+    ? highlights
+        .map(
+          ([kind, name, count]) =>
+            `<span class="telemetry-pill"><strong>${escapeHtml(kind)}</strong>${escapeHtml(short(name, 28))}<em>${count}</em></span>`
+        )
+        .join("")
+    : '<span class="muted">No network telemetry observations yet.</span>';
+
+  if (!observations.length) {
+    const message = payload.fallback_error
+      ? `Network API unavailable: ${payload.fallback_error}`
+      : "No network telemetry observations match the current target/search.";
+    els.networkBody.innerHTML = `<tr><td colspan="5" class="empty-state">${escapeHtml(message)}</td></tr>`;
+    return;
+  }
+
+  els.networkBody.innerHTML = observations
+    .map((observation) => {
+      const selected = observation.id === state.selectedId ? " selected" : "";
+      const network = observation.network || {};
+      const indicators = (network.matched_network_indicators || []).slice(0, 2).join(", ");
+      return `<tr class="${selected}" data-id="${escapeHtml(observation.id)}">
+        <td><strong>${escapeHtml(short(formatNetworkRemote(observation), 42))}</strong><span>${escapeHtml(formatTime(observation.timestamp))}</span></td>
+        <td class="nowrap">${escapeHtml((network.protocol || "--").toUpperCase())}</td>
+        <td>${escapeHtml(short(network.process || "--", 26))}</td>
+        <td class="term-line">${escapeHtml(short(indicators || observation.provenance || "metadata", 72))}</td>
+        <td>${escapeHtml(short(formatNetworkFlow(network), 72))}</td>
+      </tr>`;
+    })
+    .join("");
+
+  els.networkBody.querySelectorAll("tr[data-id]").forEach((row) => {
+    row.addEventListener("click", () => {
+      state.selectedId = row.dataset.id;
+      renderNetwork();
+      renderSignals();
+      renderDetail();
+    });
+  });
 }
 
 function renderSignals() {
   const signals = filteredSignals();
   const suffix = state.termFilter ? ` · term: ${state.termFilter}` : "";
   els.resultCount.textContent = `${signals.length} shown${suffix}`;
-  if (!signals.some((signal) => signal.id === state.selectedId)) {
+  const selectedNetworkVisible = filteredNetworkObservations().some((observation) => observation.id === state.selectedId);
+  if (!signals.some((signal) => signal.id === state.selectedId) && !selectedNetworkVisible) {
     state.selectedId = signals[0]?.id || null;
   }
   if (!signals.length) {
@@ -361,8 +582,31 @@ function renderSignals() {
   });
 }
 
+function networkDetailRows(network) {
+  if (!network) return "";
+  const remote = [network.remote_domain || network.remote_host || "unknown", network.remote_port].filter(Boolean).join(":");
+  const local = [network.local_host, network.local_port].filter(Boolean).join(":") || "Not recorded";
+  const enriched = [
+    network.ja3 ? `JA3 ${short(network.ja3, 18)}` : "",
+    network.dns_query ? `DNS ${network.dns_query}` : "",
+    network.schema || "",
+  ].filter(Boolean);
+  const indicators = (network.matched_network_indicators || []).join(", ") || "No indicators recorded";
+  return `
+      <dt>Remote</dt><dd>${escapeHtml(remote)}</dd>
+      <dt>Local</dt><dd>${escapeHtml(local)}</dd>
+      <dt>Protocol</dt><dd>${escapeHtml((network.protocol || "--").toUpperCase())}</dd>
+      <dt>Process</dt><dd>${escapeHtml(network.process || "Not recorded")}</dd>
+      <dt>State</dt><dd>${escapeHtml(network.state || "observed")}</dd>
+      <dt>Enrich</dt><dd>${escapeHtml(enriched.join(", ") || formatNetworkFlow(network))}</dd>
+      <dt>Indicators</dt><dd>${escapeHtml(indicators)}</dd>
+    `;
+}
+
 function renderDetail() {
-  const signal = (state.payload?.signals || []).find((item) => item.id === state.selectedId);
+  const signal =
+    (state.payload?.signals || []).find((item) => item.id === state.selectedId) ||
+    (state.networkPayload?.observations || []).find((item) => item.id === state.selectedId);
   if (!signal) {
     els.detailTarget.textContent = "No selection";
     els.detailBody.className = "detail-empty";
@@ -387,6 +631,7 @@ function renderDetail() {
       <dt>Terms</dt><dd>${escapeHtml(terms)}</dd>
       <dt>Entities</dt><dd>${escapeHtml(entities)}</dd>
       <dt>Raw Ref</dt><dd>${sourceLink}</dd>
+      ${networkDetailRows(signal.network)}
     </dl>
     <div class="reason-box">${escapeHtml(signal.criticality_reason || "No criticality reason recorded.")}</div>
   `;
@@ -434,6 +679,7 @@ function renderSummaries() {
     chip.addEventListener("click", () => {
       const nextTerm = chip.dataset.term || "";
       state.termFilter = state.termFilter.toLowerCase() === nextTerm.toLowerCase() ? "" : nextTerm;
+      renderNetwork();
       renderSignals();
       renderDetail();
       renderSummaries();
@@ -442,6 +688,7 @@ function renderSummaries() {
   });
   els.termList.querySelector("button[data-clear-term]")?.addEventListener("click", () => {
     state.termFilter = "";
+    renderNetwork();
     renderSignals();
     renderDetail();
     renderSummaries();
@@ -469,6 +716,7 @@ els.tabs.forEach((tab) => {
 
 els.searchInput.addEventListener("input", () => {
   state.query = els.searchInput.value;
+  renderNetwork();
   renderSignals();
   renderDetail();
 });
@@ -509,6 +757,23 @@ els.seedSample.addEventListener("click", async () => {
   await loadDashboard();
 });
 
+els.seedNetwork.addEventListener("click", async () => {
+  if (state.payload?.mode === "static") {
+    showToast("Network sample is local API only");
+    return;
+  }
+  els.seedNetwork.disabled = true;
+  const response = await fetch(`/api/network/sample?target=${encodeURIComponent(state.target)}`, { method: "POST" });
+  els.seedNetwork.disabled = false;
+  if (!response.ok) {
+    showToast("Network sample failed");
+    return;
+  }
+  const result = await response.json();
+  showToast(`Network sample: ${result.inserted_artifacts} artifact(s)`);
+  await loadDashboard();
+});
+
 els.copyLive.addEventListener("click", () => {
   copyText(state.payload?.commands?.watch_live || "ingress watch --live", "Live command").catch(() =>
     showToast("Copy failed")
@@ -519,6 +784,22 @@ els.copyIngest.addEventListener("click", () => {
   copyText(state.payload?.commands?.target_ingest || "ingress ingest target --iran --russia --china", "Ingest command").catch(
     () => showToast("Copy failed")
   );
+});
+
+els.copyNetwork.addEventListener("click", () => {
+  copyText(
+    state.networkPayload?.commands?.monitor_network ||
+      state.payload?.commands?.network_monitor ||
+      networkCommandForTarget(state.target, dbUrlForCommands(state.payload)),
+    "Network command"
+  ).catch(() => showToast("Copy failed"));
+});
+
+els.copyNetworkImport.addEventListener("click", () => {
+  copyText(
+    state.networkPayload?.commands?.import_jsonl || networkImportCommand(dbUrlForCommands(state.payload)),
+    "Network import command"
+  ).catch(() => showToast("Copy failed"));
 });
 
 loadDashboard({ reason: "initial" }).catch((error) => {

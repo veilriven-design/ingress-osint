@@ -19,6 +19,7 @@ class SourceType(str, Enum):
     TELEGRAM = "telegram"
     X = "x"
     MEDIA = "media"
+    NETWORK_TELEMETRY = "network_telemetry"
     USER_UPLOAD = "user_upload"
     WEB_ARCHIVE = "web_archive"
     WEB_PAGE = "web_page"
