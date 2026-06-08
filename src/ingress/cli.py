@@ -227,6 +227,33 @@ def build_header(stats: str) -> Panel:
     )
 
 
+def target_watch_title(targets: list[str], *, storage: bool = False) -> tuple[str, str]:
+    if targets:
+        names = [target.title() for target in targets]
+        label = names[0] if len(names) == 1 else " / ".join(names)
+        suffix = "Military" if len(names) == 1 else "Militaries"
+        source = "stored artifacts" if storage else "live signals"
+        return f"INGRESS  •  {label} {suffix}", f"Targeted watch for {label}; showing {source}."
+    if storage:
+        return "INGRESS  •  Stored Military Signals", "Showing all stored artifacts."
+    return (
+        "INGRESS  •  Military Signals",
+        "Live view of signals entering the open domain.\nFull provenance, confidence, and verification status shown for every item.",
+    )
+
+
+def metadata_targets(metadata: dict[str, Any]) -> set[str]:
+    targets: set[str] = set()
+    for key in ("target", "target_country"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            targets.add(value.lower())
+    values = metadata.get("target_countries")
+    if isinstance(values, list):
+        targets.update(value.lower() for value in values if isinstance(value, str) and value)
+    return targets
+
+
 def build_recent_table() -> Table:
     t = Table(
         title="Recent Open-Domain Signals",
@@ -267,6 +294,16 @@ def build_recent_table() -> Table:
     if not items:
         t.add_row("-", "waiting for signals...", "", "", "")
     return t
+
+
+def print_watch_snapshot(main_title: str, second_line: str) -> None:
+    render_dashboard()
+    console.print(Panel.fit(
+        f"[bold red]{main_title}[/]\n[dim]{second_line}[/]",
+        border_style="red",
+    ))
+    console.print(build_recent_table())
+    console.print(Group(build_sources_panel(), build_entities_panel()))
 
 
 def build_sources_panel() -> Panel:
@@ -379,20 +416,7 @@ def run_canned(run_seconds: float = 0) -> None:
             if SIGNAL_QUEUE is not None:
                 SIGNAL_QUEUE.put(s)
 
-    if current_targets:
-        if len(current_targets) == 1:
-            mil = current_targets[0].title()
-            main_title = f"INGRESS  •  {mil} Military"
-        else:
-            mils = " / ".join(t.title() for t in current_targets)
-            main_title = f"INGRESS  •  {mils} Militaries"
-    else:
-        main_title = "INGRESS  •  Military Signals"
-    if current_targets:
-        mil_str = ", ".join(t.title() for t in current_targets)
-        second_line = f"Targeted to {mil_str}. Live view of signals."
-    else:
-        second_line = "Live view of signals entering the open domain.\nFull provenance, confidence, and verification status shown for every item."
+    main_title, second_line = target_watch_title(current_targets)
     console.print(Panel.fit(
         f"[bold red]{main_title}[/]\n"
         f"[dim]{second_line}[/]",
@@ -441,7 +465,11 @@ def run_canned(run_seconds: float = 0) -> None:
         console.print("[dim]Thank you for using Ingress. Remember: always verify, attribute, and respect source terms.[/]\n")
 
 
-def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
+def run_watch(
+    db_url: str | None = None,
+    run_seconds: float = 0,
+    focus_targets: list[str] | None = None,
+) -> None:
     """Live TUI pulling from storage (integrated)."""
     if not HAS_RICH:
         print("FATAL: rich is required for the Ingress TUI.")
@@ -454,16 +482,20 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
     reset_dashboard_state()
 
     db = db_url or get_db_url()
-    current_targets = []
-    try:
-        from .targeting import get_current_target
-        current_targets = get_current_target()
-    except Exception:
-        pass
+    current_targets = focus_targets or []
+    if not current_targets:
+        try:
+            from .targeting import get_current_target
+            current_targets = get_current_target()
+        except Exception:
+            pass
+    current_targets = [target.lower() for target in current_targets if target]
 
     try:
         ensure_schema(db)
         artifacts = get_recent_artifacts(30, db)
+        queued_count = 0
+        skipped_for_target = 0
         for a in artifacts:
             ts_str = a.get("fetched_at", "")
             try:
@@ -475,6 +507,10 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
                 meta = _json.loads(a.get("metadata", "{}")) if a.get("metadata") else {}
             except Exception:
                 pass
+            artifact_targets = metadata_targets(meta)
+            if current_targets and artifact_targets and artifact_targets.isdisjoint(current_targets):
+                skipped_for_target += 1
+                continue
             sig = {
                 "ts": ts,
                 "source": a.get("source_name", a.get("source_id", "?")),
@@ -488,12 +524,16 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
             }
             if SIGNAL_QUEUE is not None:
                 SIGNAL_QUEUE.put(sig)
+                queued_count += 1
         if not artifacts:
             console.print(
                 "[yellow]No stored artifacts found.[/] "
                 "Run [bold]ingress ingest sample --db-url "
                 f"{db}[/] for a local smoke dataset, or ingest an RSS feed."
             )
+        elif current_targets and queued_count == 0 and skipped_for_target:
+            label = ", ".join(target.title() for target in current_targets)
+            console.print(f"[yellow]No stored artifacts match current focus: {label}.[/]")
     except Exception as exc:
         if current_targets:
             mil_str = ", ".join(t.title() for t in current_targets)
@@ -506,12 +546,12 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
                 if SIGNAL_QUEUE is not None:
                     SIGNAL_QUEUE.put(s)
 
-    main_title = "INGRESS  •  Stored Signals"
-    if current_targets:
-        mil_str = ", ".join(t.title() for t in current_targets)
-        second_line = f"Saved focus: {mil_str}. Showing all stored artifacts."
-    else:
-        second_line = "Pulls from storage. Use 'ingest target' or 'rss' to populate."
+    main_title, second_line = target_watch_title(current_targets, storage=True)
+    if run_seconds > 0 or not sys.stdout.isatty():
+        print_watch_snapshot(main_title, second_line)
+        console.print("\n[bold]Ingress watch snapshot rendered.[/]\n")
+        return
+
     console.print(Panel.fit(
         f"[bold red]{main_title}[/]\n"
         f"[dim]{second_line}[/]",
@@ -579,7 +619,7 @@ def watch(
         from .targeting import set_current_target
         if not set_current_target(targets):
             console.print("[yellow]Could not persist target focus; continuing for this run only.[/]")
-    run_watch(db_url=db_url, run_seconds=run_seconds)
+    run_watch(db_url=db_url, run_seconds=run_seconds, focus_targets=targets or None)
 
 
 @app.command()

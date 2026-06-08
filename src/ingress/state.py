@@ -24,14 +24,27 @@ def get_state_dir() -> Path:
     return Path.home() / ".local" / "share" / "ingress"
 
 
+def get_fallback_state_dir() -> Path:
+    return Path.cwd() / ".ingress"
+
+
 def ensure_state_dir() -> Path:
     state_dir = get_state_dir()
-    state_dir.mkdir(parents=True, exist_ok=True)
-    return state_dir
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir
+    except OSError:
+        fallback = get_fallback_state_dir()
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
 
 
 def target_state_file() -> Path:
     return get_state_dir() / "current_target.json"
+
+
+def fallback_target_state_file() -> Path:
+    return get_fallback_state_dir() / "current_target.json"
 
 
 def cases_file() -> Path:

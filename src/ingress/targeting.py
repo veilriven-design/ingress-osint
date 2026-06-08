@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, TypedDict
 
-from .state import target_state_file
+from .state import fallback_target_state_file, target_state_file
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -214,16 +214,19 @@ def _run_target_collectors(
     limit: int = 50,
     db_url: str | None = None,
     diagnostics: list[str] | None = None,
+    target_countries: list[str] | None = None,
 ) -> list["Artifact"]:
     """Internal: run RSS + Telegram (if creds) with the given config."""
     from .collectors.rss import RSSCollector
     from .storage import ensure_schema, insert_artifact
     artifacts: list["Artifact"] = []
+    targets = [country.lower() for country in (target_countries or [])]
 
     # RSS (feeds + keywords)
     if config.get("rss_feeds"):
         rss = RSSCollector(config["rss_feeds"], keywords=config.get("keywords"))
         arts = rss.collect(limit=limit)
+        _stamp_artifact_targets(arts, targets)
         if diagnostics is not None:
             diagnostics.extend(rss.diagnostics)
         artifacts.extend(arts)
@@ -245,12 +248,24 @@ def _run_target_collectors(
                 keywords=config.get("keywords")
             )
             arts = tg.collect_sync(limit=limit)
+            _stamp_artifact_targets(arts, targets)
             artifacts.extend(arts)
             if db_url:
                 for a in arts:
                     insert_artifact(a, db_url)
 
     return artifacts
+
+
+def _stamp_artifact_targets(artifacts: list["Artifact"], countries: list[str]) -> None:
+    if not countries:
+        return
+    for artifact in artifacts:
+        metadata = dict(artifact.metadata or {})
+        metadata["target_countries"] = countries
+        if len(countries) == 1:
+            metadata["target_country"] = countries[0]
+        artifact.metadata = metadata
 
 
 def target_iran(
@@ -262,7 +277,13 @@ def target_iran(
     Toggle via CLI: ingress ingest target --iran
     """
     config = get_iran_config()
-    return _run_target_collectors(config, limit=limit, db_url=db_url, diagnostics=diagnostics)
+    return _run_target_collectors(
+        config,
+        limit=limit,
+        db_url=db_url,
+        diagnostics=diagnostics,
+        target_countries=["iran"],
+    )
 
 
 def target_russia(
@@ -274,7 +295,13 @@ def target_russia(
     Toggle via CLI: ingress ingest target --russia
     """
     config = get_russia_config()
-    return _run_target_collectors(config, limit=limit, db_url=db_url, diagnostics=diagnostics)
+    return _run_target_collectors(
+        config,
+        limit=limit,
+        db_url=db_url,
+        diagnostics=diagnostics,
+        target_countries=["russia"],
+    )
 
 
 def target_china(
@@ -286,7 +313,13 @@ def target_china(
     Toggle via CLI: ingress ingest target --china
     """
     config = get_china_config()
-    return _run_target_collectors(config, limit=limit, db_url=db_url, diagnostics=diagnostics)
+    return _run_target_collectors(
+        config,
+        limit=limit,
+        db_url=db_url,
+        diagnostics=diagnostics,
+        target_countries=["china"],
+    )
 
 
 def target_multiple(
@@ -299,39 +332,56 @@ def target_multiple(
     All data from public sources.
     """
     config = get_target_config(countries)
-    return _run_target_collectors(config, limit=limit, db_url=db_url, diagnostics=diagnostics)
+    return _run_target_collectors(
+        config,
+        limit=limit,
+        db_url=db_url,
+        diagnostics=diagnostics,
+        target_countries=countries,
+    )
 
 
 _TARGET_STATE = target_state_file
+_FALLBACK_TARGET_STATE = fallback_target_state_file
 
 
 def _target_state_path() -> "Path":
     return _TARGET_STATE() if callable(_TARGET_STATE) else _TARGET_STATE
 
 
+def _fallback_target_state_path() -> "Path":
+    return (
+        _FALLBACK_TARGET_STATE()
+        if callable(_FALLBACK_TARGET_STATE)
+        else _FALLBACK_TARGET_STATE
+    )
+
+
 def set_current_target(countries: list[str]) -> bool:
     """Persist the current target focus. Returns False when state is not writable."""
-    state_path = _target_state_path()
-    try:
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        with state_path.open("w") as f:
-            json.dump({"targets": countries or []}, f)
-        return True
-    except OSError:
-        return False
+    for state_path in (_target_state_path(), _fallback_target_state_path()):
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            with state_path.open("w") as f:
+                json.dump({"targets": countries or []}, f)
+            return True
+        except OSError:
+            continue
+    return False
 
 
 def get_current_target() -> list[str]:
     """Return the last set target(s), e.g. ['iran'] or [] if none."""
-    state_path = _target_state_path()
-    if not state_path.exists():
-        return []
-    try:
-        with state_path.open() as f:
-            data = json.load(f)
-        targets = data.get("targets", [])
-        if isinstance(targets, list):
-            return [target for target in targets if isinstance(target, str)]
-        return []
-    except Exception:
-        return []
+    for state_path in (_target_state_path(), _fallback_target_state_path()):
+        if not state_path.exists():
+            continue
+        try:
+            with state_path.open() as f:
+                data = json.load(f)
+            targets = data.get("targets", [])
+            if isinstance(targets, list):
+                return [target for target in targets if isinstance(target, str)]
+            return []
+        except Exception:
+            continue
+    return []

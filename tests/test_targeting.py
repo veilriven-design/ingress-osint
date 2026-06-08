@@ -19,11 +19,24 @@ def test_target_config_merges_and_deduplicates() -> None:
 
 def test_current_target_persistence_is_validated(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(targeting, "_TARGET_STATE", tmp_path / "current_target.json")
+    monkeypatch.setattr(targeting, "_FALLBACK_TARGET_STATE", tmp_path / "fallback_current_target.json")
 
     targeting.set_current_target(["iran", "china"])
     assert targeting.get_current_target() == ["iran", "china"]
 
     (tmp_path / "current_target.json").write_text('{"targets": ["russia", 42, null]}')
+    assert targeting.get_current_target() == ["russia"]
+
+
+def test_current_target_uses_fallback_when_primary_state_is_unwritable(tmp_path, monkeypatch) -> None:
+    blocked_parent = tmp_path / "blocked"
+    blocked_parent.write_text("not a directory")
+    fallback = tmp_path / "fallback" / "current_target.json"
+    monkeypatch.setattr(targeting, "_TARGET_STATE", blocked_parent / "current_target.json")
+    monkeypatch.setattr(targeting, "_FALLBACK_TARGET_STATE", fallback)
+
+    assert targeting.set_current_target(["russia"]) is True
+    assert fallback.exists()
     assert targeting.get_current_target() == ["russia"]
 
 

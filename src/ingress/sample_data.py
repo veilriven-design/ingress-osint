@@ -36,6 +36,7 @@ class SampleSignal(TypedDict):
     confidence: float
     status: VerificationStatus
     minutes_ago: int
+    target_country: str
 
 
 SAMPLE_SIGNALS: list[SampleSignal] = [
@@ -52,6 +53,7 @@ SAMPLE_SIGNALS: list[SampleSignal] = [
         "confidence": 0.72,
         "status": VerificationStatus.ANALYST_REVIEWED,
         "minutes_ago": 20,
+        "target_country": "russia",
     },
     {
         "source_id": "sample-telegram-osint",
@@ -66,6 +68,7 @@ SAMPLE_SIGNALS: list[SampleSignal] = [
         "confidence": 0.58,
         "status": VerificationStatus.UNVERIFIED,
         "minutes_ago": 55,
+        "target_country": "russia",
     },
     {
         "source_id": "sample-media",
@@ -80,6 +83,7 @@ SAMPLE_SIGNALS: list[SampleSignal] = [
         "confidence": 0.66,
         "status": VerificationStatus.CORROBORATED,
         "minutes_ago": 90,
+        "target_country": "russia",
     },
 ]
 
@@ -124,6 +128,8 @@ def make_sample_records() -> list[tuple[Artifact, Sighting]]:
                 "sample": True,
                 "entities": row["entities"],
                 "geoparsed_places": [row["location_name"]],
+                "target_country": row["target_country"],
+                "target_countries": [row["target_country"]],
             },
         )
         sighting = Sighting(
@@ -138,7 +144,7 @@ def make_sample_records() -> list[tuple[Artifact, Sighting]]:
             confidence=row["confidence"],
             confidence_level=ConfidenceLevel.MEDIUM,
             verification_status=row["status"],
-            metadata={"sample": True},
+            metadata={"sample": True, "target_country": row["target_country"]},
         )
         records.append((artifact, sighting))
 

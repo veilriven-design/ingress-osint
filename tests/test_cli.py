@@ -100,3 +100,62 @@ def test_analyze_is_non_interactive_by_default(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Media Analysis Summary" in result.output
     assert "Stored as Artifact" in result.output
+
+
+def test_watch_with_explicit_target_renders_focused_snapshot(tmp_path, monkeypatch) -> None:
+    from ingress import targeting
+
+    monkeypatch.setenv("INGRESS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(targeting, "_TARGET_STATE", tmp_path / "state" / "current_target.json")
+    monkeypatch.setattr(targeting, "_FALLBACK_TARGET_STATE", tmp_path / "fallback_current_target.json")
+    targeting.set_current_target(["iran"])
+    database = tmp_path / "watch.db"
+    db_url = f"sqlite:///{database}"
+
+    sample = runner.invoke(app, ["ingest", "sample", "--db-url", db_url])
+    result = runner.invoke(app, ["watch", "--russia", "--run-seconds", "1", "--db-url", db_url])
+
+    assert sample.exit_code == 0
+    assert result.exit_code == 0, result.output
+    assert "INGRESS  •  Russia Military" in result.output
+    assert "INGRESS  •  Iran Military" not in result.output
+    assert "Targeted watch for Russia; showing stored artifacts." in result.output
+    assert "Recent Open-Domain Signals" in result.output
+    assert "Sample Defense RSS" in result.output
+    assert "Ingress watch snapshot rendered." in result.output
+    assert "Press 'q'" not in result.output
+
+
+def test_watch_uses_saved_target_when_no_explicit_target_is_given(tmp_path, monkeypatch) -> None:
+    from ingress import targeting
+
+    monkeypatch.setenv("INGRESS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(targeting, "_TARGET_STATE", tmp_path / "state" / "current_target.json")
+    monkeypatch.setattr(targeting, "_FALLBACK_TARGET_STATE", tmp_path / "fallback_current_target.json")
+    database = tmp_path / "watch-saved-target.db"
+    db_url = f"sqlite:///{database}"
+
+    assert targeting.set_current_target(["russia"]) is True
+    sample = runner.invoke(app, ["ingest", "sample", "--db-url", db_url])
+    result = runner.invoke(app, ["watch", "--run-seconds", "1", "--db-url", db_url])
+
+    assert sample.exit_code == 0
+    assert result.exit_code == 0, result.output
+    assert "INGRESS  •  Russia Military" in result.output
+    assert "Targeted watch for Russia; showing stored artifacts." in result.output
+    assert "Sample Defense RSS" in result.output
+
+
+def test_watch_filters_stored_rows_that_have_other_target_metadata(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("INGRESS_STATE_DIR", str(tmp_path / "state"))
+    database = tmp_path / "watch-filter.db"
+    db_url = f"sqlite:///{database}"
+
+    sample = runner.invoke(app, ["ingest", "sample", "--db-url", db_url])
+    result = runner.invoke(app, ["watch", "--china", "--run-seconds", "1", "--db-url", db_url])
+
+    assert sample.exit_code == 0
+    assert result.exit_code == 0, result.output
+    assert "INGRESS  •  China Military" in result.output
+    assert "No stored artifacts match current focus: China." in result.output
+    assert "Sample Defense RSS" not in result.output
