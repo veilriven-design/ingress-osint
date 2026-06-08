@@ -14,6 +14,8 @@ Example usage:
 from __future__ import annotations
 
 import hashlib
+import html as html_lib
+import re
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +28,25 @@ except ImportError:  # pragma: no cover - exercised by minimal installs
     feedparser = None  # type: ignore[assignment]
 
 from ..models import Artifact, ProvenanceEntry, Source, SourceType
+
+
+def _normalize_keyword_text(value: str) -> str:
+    return (
+        value.replace("’", "'")
+        .replace("‘", "'")
+        .replace("“", '"')
+        .replace("”", '"')
+        .lower()
+    )
+
+
+def _clean_text(value: str) -> str:
+    without_tags = re.sub(r"<[^>]+>", " ", value)
+    return " ".join(html_lib.unescape(without_tags).split())
+
+
+def _keyword_matches(keyword: str, text: str) -> bool:
+    return re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text) is not None
 
 
 class RSSCollector:
@@ -52,7 +73,7 @@ class RSSCollector:
         self.name = name or "Multi RSS Target"
         self.credibility_prior = credibility_prior
         self.tos_summary = tos_summary
-        self.keywords = [k.lower() for k in (keywords or [])]
+        self.keywords = [_normalize_keyword_text(k) for k in (keywords or [])]
         self.timeout = timeout
         self.diagnostics: list[str] = []
 
@@ -126,8 +147,8 @@ class RSSCollector:
                 if limit is not None and len(artifacts) >= limit:
                     break
                 link = entry.get("link") or entry.get("id")
-                title = entry.get("title", "")
-                summary = entry.get("summary", "") or entry.get("description", "")
+                title = _clean_text(entry.get("title", ""))
+                summary = _clean_text(entry.get("summary", "") or entry.get("description", ""))
                 published = entry.get("published_parsed") or entry.get("updated_parsed")
 
                 if published:
@@ -153,9 +174,11 @@ class RSSCollector:
                 text = (title + "\n\n" + summary).strip() if title or summary else (link or "")
 
                 # Keyword filter for targeted countries (military terms)
+                matched_keywords: list[str] = []
                 if self.keywords:
-                    text_lower = text.lower() + " " + title.lower()
-                    if not any(kw in text_lower for kw in self.keywords):
+                    text_lower = _normalize_keyword_text(text + " " + title)
+                    matched_keywords = [kw for kw in self.keywords if _keyword_matches(kw, text_lower)]
+                    if not matched_keywords:
                         continue
 
                 canonical = f"{link}|{title}|{summary[:300]}".encode("utf-8", errors="ignore")
@@ -185,6 +208,7 @@ class RSSCollector:
                         "entry_id": entry.get("id"),
                         "tags": [t.get("term") for t in entry.get("tags", []) if isinstance(t, dict)],
                         "target_keywords": self.keywords,
+                        "matched_keywords": matched_keywords,
                     },
                 )
                 artifacts.append(art)

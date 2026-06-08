@@ -11,7 +11,9 @@ visible for every item.
 from __future__ import annotations
 
 import json
+import html as html_lib
 import random
+import re
 import shutil
 import sys
 import threading
@@ -254,6 +256,48 @@ def metadata_targets(metadata: dict[str, Any]) -> set[str]:
     if isinstance(values, list):
         targets.update(value.lower() for value in values if isinstance(value, str) and value)
     return targets
+
+
+def normalize_match_text(value: str) -> str:
+    return (
+        value.replace("’", "'")
+        .replace("‘", "'")
+        .replace("“", '"')
+        .replace("”", '"')
+        .lower()
+    )
+
+
+def keyword_matches(keyword: str, text: str) -> bool:
+    return re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text) is not None
+
+
+def clean_display_text(value: str) -> str:
+    without_tags = re.sub(r"<[^>]+>", " ", value)
+    return " ".join(html_lib.unescape(without_tags).split())
+
+
+def watch_terms(metadata: dict[str, Any], text: str, targets: list[str]) -> list[str]:
+    for key in ("geoparsed_places", "entities", "matched_keywords"):
+        values = metadata.get(key)
+        if isinstance(values, list):
+            terms = [value for value in values if isinstance(value, str) and value]
+            if terms:
+                return terms
+    if not targets:
+        return []
+    try:
+        from .targeting import get_target_config
+
+        config = get_target_config(targets)
+        normalized = normalize_match_text(text)
+        return [
+            normalize_match_text(keyword)
+            for keyword in config.get("keywords", [])
+            if keyword_matches(normalize_match_text(keyword), normalized)
+        ][:8]
+    except Exception:
+        return []
 
 
 def target_label(targets: list[str]) -> str:
@@ -601,14 +645,15 @@ def run_watch(
             if current_targets and artifact_targets and artifact_targets.isdisjoint(current_targets):
                 skipped_for_target += 1
                 continue
+            text = clean_display_text(a.get("text") or "")
             sig = {
                 "ts": ts,
                 "source": a.get("source_name", a.get("source_id", "?")),
                 "type": str(a.get("content_type", "text")).upper(),
-                "text": (a.get("text") or "")[:180],
+                "text": text[:180],
                 "confidence": round(0.7 + (hash(str(a.get("id", ""))) % 20) / 100.0, 2),
                 "status": "analyst_reviewed",
-                "entities": meta.get("geoparsed_places", []) or meta.get("entities", []),
+                "entities": watch_terms(meta, text, current_targets),
                 "provenance": f"db:{str(a.get('content_hash', 'n/a'))[:8]}",
                 "target": meta.get("target") or meta.get("target_country"),
             }

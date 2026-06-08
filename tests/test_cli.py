@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from ingress.cli import app
+from ingress.cli import app, clean_display_text, watch_terms
 
 
 runner = CliRunner()
@@ -100,6 +100,16 @@ def test_analyze_is_non_interactive_by_default(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Media Analysis Summary" in result.output
     assert "Stored as Artifact" in result.output
+
+
+def test_watch_terms_backfills_old_rss_rows_without_match_metadata() -> None:
+    text = clean_display_text("<p>Russian drone hit a depot; Russian air defense systems were reported nearby.</p>")
+
+    terms = watch_terms({}, text, ["russia"])
+
+    assert text == "Russian drone hit a depot; Russian air defense systems were reported nearby."
+    assert "russian drone" in terms
+    assert "russian air defense systems" in terms
 
 
 def test_watch_with_explicit_target_renders_focused_snapshot(tmp_path, monkeypatch) -> None:

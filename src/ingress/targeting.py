@@ -41,12 +41,9 @@ def get_iran_config() -> TargetConfig:
     """
     return {
         "rss_feeds": [
-            # Iranian state / military media RSS (public)
-            "https://www.tasnimnews.com/en/rss",
-            "https://www.farsnews.ir/en/rss",
-            "https://www.presstv.ir/rss",  # PressTV (public, covers military)
-            "https://www.irna.ir/en/rss",  # IRNA official
-            "https://www.iranmonitor.org/feed",  # OSINT dashboard aggregation
+            "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/mideast-africa/?outputType=xml",
+            "https://www.tehrantimes.com/rss",
+            "https://www.aljazeera.com/xml/rss/all.xml",
         ],
         "telegram_channels": [
             # Public Telegram channels for Iranian military signals (official/state/OSINT)
@@ -67,7 +64,9 @@ def get_iran_config() -> TargetConfig:
             "ballistic missile", "cruise missile", "Kheibar Shekan", "Fattah", "Emad", "Sejjil",
             "Quds Force", "Qassem Soleimani", "Strait of Hormuz", "Bandar Abbas", "Kish Island",
             "IRGC drone", "UAV Iran", "missile test Iran", "drone attack", "IRGC claims",
-            "Persian Gulf", "Oman Sea", "Chabahar", "Jask", "IRGC missile bases",
+            "Iran launches drones", "Iranian sites", "Iranian military", "Iranian army",
+            "Iran air defense", "air defense Iran", "nuclear sites",
+            "Oman Sea", "Chabahar", "Jask", "IRGC missile bases",
             "Mowj class", "Jamaran", "Sahand destroyer",
             "submarine Iran", "Fateh class", "Ghadir", "Younes",
             "helicopter Iran", "Mi-17", "Bell 214", "AH-1 Cobra Iran",
@@ -134,10 +133,8 @@ def get_china_config() -> TargetConfig:
     """
     return {
         "rss_feeds": [
-            "http://eng.chinamil.com.cn/rss",  # PLA Daily English official
-            "https://www.globaltimes.cn/rss",  # Global Times (PLA coverage)
-            "https://www.cgtn.com/rss",        # CGTN
-            "https://www.msa.gov.cn/rss",      # Maritime Safety Admin (drill announcements)
+            "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/asia-pacific/?outputType=xml",
+            "https://www.scmp.com/rss/4/feed",
         ],
         "telegram_channels": [
             # Public for PLA
@@ -152,6 +149,9 @@ def get_china_config() -> TargetConfig:
             "J-20", "J-16", "J-10", "H-6", "H-6K", "Y-20", "KJ-500",
             "DF-21", "DF-26", "DF-17", "DF-41", "PLA Rocket Force",
             "Taiwan Strait", "South China Sea", "East China Sea", "Philippine Sea",
+            "Taiwan", "Chinese military", "China's military", "China military", "China's buildup",
+            "Chinese navy", "China Coast Guard", "warheads", "nuclear missile", "nuclear missiles",
+            "missile silos", "defense spending", "military buildup",
             "military drill China", "PLA exercise", "Joint Sword", "Strait Thunder",
             "PLA amphibious", "Type 075", "Type 071",
             "US warship Taiwan Strait", "Japanese destroyer SCS", "Australian warship",
@@ -333,14 +333,23 @@ def target_multiple(
     """Toggleable multi-target. E.g. countries=['iran', 'russia'].
     All data from public sources.
     """
-    config = get_target_config(countries)
-    return _run_target_collectors(
-        config,
-        limit=limit,
-        db_url=db_url,
-        diagnostics=diagnostics,
-        target_countries=countries,
-    )
+    artifacts: list["Artifact"] = []
+    all_configs = get_all_targets()
+    seen_countries = list(dict.fromkeys(country.lower() for country in countries))
+    for country in seen_countries:
+        config = all_configs.get(country)
+        if not config:
+            continue
+        artifacts.extend(
+            _run_target_collectors(
+                config,
+                limit=limit,
+                db_url=db_url,
+                diagnostics=diagnostics,
+                target_countries=[country],
+            )
+        )
+    return artifacts
 
 
 _TARGET_STATE = target_state_file
@@ -361,22 +370,29 @@ def _fallback_target_state_path() -> "Path":
 
 def set_current_target(countries: list[str]) -> bool:
     """Persist the current target focus. Returns False when state is not writable."""
+    wrote_state = False
     for state_path in (_target_state_path(), _fallback_target_state_path()):
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
             with state_path.open("w") as f:
                 json.dump({"targets": countries or []}, f)
-            return True
+            wrote_state = True
         except OSError:
             continue
-    return False
+    return wrote_state
 
 
 def get_current_target() -> list[str]:
     """Return the last set target(s), e.g. ['iran'] or [] if none."""
-    for state_path in (_target_state_path(), _fallback_target_state_path()):
-        if not state_path.exists():
+    state_paths = []
+    for path in (_target_state_path(), _fallback_target_state_path()):
+        try:
+            if path.exists():
+                state_paths.append((path.stat().st_mtime, path))
+        except OSError:
             continue
+
+    for _, state_path in sorted(state_paths, reverse=True):
         try:
             with state_path.open() as f:
                 data = json.load(f)
