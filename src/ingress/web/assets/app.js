@@ -4,9 +4,21 @@ const state = {
   payload: null,
   selectedId: null,
   timer: null,
+  mode: "api",
 };
 
+const AUTO_REFRESH_MS = 15 * 60 * 1000;
+const STATIC_SNAPSHOT_URL = "assets/dashboard-static.json";
+const TARGET_LABELS = {
+  comprehensive: "Comprehensive",
+  iran: "Iran",
+  russia: "Russia",
+  china: "China",
+};
+const COUNTRY_CODES = { iran: "IR", russia: "RU", china: "CN" };
+
 const els = {
+  modeLine: document.querySelector(".eyeline"),
   title: document.querySelector("#viewTitle"),
   tabs: [...document.querySelectorAll(".target-tab")],
   signalsBody: document.querySelector("#signalsBody"),
@@ -56,6 +68,87 @@ function formatTime(value) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+function prefersStaticSnapshot() {
+  return window.location.protocol === "file:" || window.location.hostname.endsWith(".github.io");
+}
+
+function sortedCounts(values, limit = 999) {
+  const counts = new Map();
+  values.filter(Boolean).forEach((value) => {
+    const key = String(value);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, limit);
+}
+
+function signalMatchesTarget(signal, target) {
+  if (target === "comprehensive") return true;
+  const signalTarget = String(signal.target || "").toLowerCase();
+  const countryCode = String(signal.country_code || "").toUpperCase();
+  return signalTarget === target || countryCode === COUNTRY_CODES[target];
+}
+
+function summarizeSignals(signals) {
+  const terms = signals.flatMap((signal) => [...(signal.entities || []), ...(signal.criticality_terms || [])]);
+  return {
+    signals: signals.length,
+    countries: sortedCounts(signals.map((signal) => signal.target || signal.country_code || "unknown")),
+    sources: sortedCounts(signals.map((signal) => signal.source || "unknown"), 8),
+    terms: sortedCounts(terms, 10),
+    criticality: sortedCounts(signals.map((signal) => signal.criticality_label || "routine")),
+    audit_logs: [],
+  };
+}
+
+function payloadForCurrentTarget(payload, mode, fallbackError = null) {
+  const target = TARGET_LABELS[state.target] ? state.target : "comprehensive";
+  const signals =
+    mode === "static" ? (payload.signals || []).filter((signal) => signalMatchesTarget(signal, target)) : payload.signals || [];
+  const summary = mode === "static" ? summarizeSignals(signals) : payload.summary || summarizeSignals(signals);
+  const counts =
+    mode === "static"
+      ? {
+          artifacts: signals.length,
+          provenance: signals.length,
+          sightings: 0,
+          sighting_artifacts: 0,
+        }
+      : payload.counts || {};
+  return {
+    ...payload,
+    mode,
+    fallback_error: fallbackError?.message || "",
+    target,
+    target_label: TARGET_LABELS[target],
+    db_url:
+      mode === "static"
+        ? "GitHub Pages static snapshot; run local FastAPI for live SQLite data."
+        : payload.db_url,
+    counts,
+    summary,
+    signals,
+  };
+}
+
+function setDashboardPayload(payload, mode, fallbackError = null) {
+  state.mode = mode;
+  state.payload = payloadForCurrentTarget(payload, mode, fallbackError);
+  const selectedStillVisible = (state.payload.signals || []).some((signal) => signal.id === state.selectedId);
+  if (!selectedStillVisible) {
+    state.selectedId = state.payload.signals?.[0]?.id || null;
+  }
+  render();
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
 function criticalityInitial(signal) {
   const label = String(signal.criticality_label || "routine").toLowerCase();
   return { high: "H", elevated: "E", corroborated: "C", routine: "R" }[label] || "!";
@@ -94,17 +187,20 @@ function filteredSignals() {
 }
 
 async function loadDashboard() {
-  els.signalsBody.innerHTML = '<tr><td colspan="9" class="empty-state">Loading local signals...</td></tr>';
-  const response = await fetch(`/api/dashboard?target=${encodeURIComponent(state.target)}&limit=80`);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `HTTP ${response.status}`);
+  els.signalsBody.innerHTML = '<tr><td colspan="9" class="empty-state">Loading signals...</td></tr>';
+  let apiError = null;
+  if (!prefersStaticSnapshot()) {
+    try {
+      const payload = await fetchJson(`/api/dashboard?target=${encodeURIComponent(state.target)}&limit=80`);
+      setDashboardPayload(payload, "api");
+      return;
+    } catch (error) {
+      apiError = error;
+    }
   }
-  state.payload = await response.json();
-  if (!state.selectedId && state.payload.signals?.length) {
-    state.selectedId = state.payload.signals[0].id;
-  }
-  render();
+
+  const payload = await fetchJson(`${STATIC_SNAPSHOT_URL}?updated=${Date.now()}`);
+  setDashboardPayload(payload, "static", apiError);
 }
 
 function render() {
@@ -117,6 +213,10 @@ function render() {
 function renderHeader() {
   const payload = state.payload;
   if (!payload) return;
+  els.modeLine.textContent =
+    payload.mode === "static"
+      ? "GitHub Pages static snapshot"
+      : "Local SQLite + JSONL audit surface";
   els.title.textContent =
     payload.target === "comprehensive"
       ? "Comprehensive Military Scanner"
@@ -128,7 +228,11 @@ function renderHeader() {
   els.dbUrl.textContent = payload.db_url;
 
   const audit = payload.summary.audit_logs?.[0];
-  if (audit) {
+  if (payload.mode === "static") {
+    els.auditName.textContent = "Static Pages snapshot";
+    els.auditMeta.textContent =
+      "Refresh reloads bundled JSON. Run the local FastAPI app for live collection and SQLite updates.";
+  } else if (audit) {
     els.auditName.textContent = audit.name;
     els.auditMeta.textContent = `${Math.round((audit.bytes || 0) / 1024)} KB updated ${formatTime(audit.updated_at)}`;
   } else {
@@ -137,6 +241,9 @@ function renderHeader() {
   }
 
   els.tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.target === state.target));
+  els.seedSample.disabled = payload.mode === "static";
+  els.seedSample.title =
+    payload.mode === "static" ? "Sample seeding requires the local FastAPI API." : "Seed local sample data";
 }
 
 function renderSignals() {
@@ -274,14 +381,18 @@ els.autoRefresh.addEventListener("change", () => {
   if (els.autoRefresh.checked) {
     state.timer = window.setInterval(() => {
       loadDashboard().catch((error) => showToast(`Auto refresh failed: ${error.message}`));
-    }, 10000);
-    showToast("Auto refresh on");
+    }, AUTO_REFRESH_MS);
+    showToast("Auto refresh every 15 min");
   } else {
     showToast("Auto refresh off");
   }
 });
 
 els.seedSample.addEventListener("click", async () => {
+  if (state.payload?.mode === "static") {
+    showToast("Sample seed is local API only");
+    return;
+  }
   const response = await fetch("/api/sample", { method: "POST" });
   if (!response.ok) {
     showToast("Sample seed failed");

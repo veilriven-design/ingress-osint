@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -25,7 +27,20 @@ def test_web_app_index_is_served() -> None:
 
     assert response.status_code == 200
     assert "Ingress Web Console" in response.text
-    assert "/assets/app.js" in response.text
+    assert 'href="assets/styles.css"' in response.text
+    assert 'src="assets/app.js"' in response.text
+
+
+def test_github_pages_static_dashboard_snapshot_is_available() -> None:
+    snapshot_path = Path("src/ingress/web/assets/dashboard-static.json")
+
+    payload = json.loads(snapshot_path.read_text())
+
+    assert payload["status"] == "static"
+    assert payload["target"] == "comprehensive"
+    assert {signal["target"] for signal in payload["signals"]} >= {"iran", "russia", "china"}
+    assert all(str(signal["raw_ref"]).startswith("https://") for signal in payload["signals"])
+    assert all(signal.get("criticality_reason") for signal in payload["signals"])
 
 
 def test_artifacts_endpoint_reads_sqlite_storage(tmp_path) -> None:

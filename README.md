@@ -4,7 +4,7 @@ High-integrity, local-first tooling for military OSINT signals as they enter pub
 
 Ingress is for analysts, researchers, journalists, and authorized teams who need a reviewable workbench instead of ad hoc browser tabs and spreadsheets. It prioritizes provenance, bounded collection, explicit operator choices, and clear legal/ethical handling.
 
-Status: alpha, but the core CLI, SQLite storage, RSS ingest, credentialed Telegram ingest, media analysis, case notes, GeoJSON export, and a small FastAPI read surface are implemented and tested.
+Status: alpha, but the core CLI, SQLite storage, RSS ingest, credentialed Telegram ingest, media analysis, case notes, GeoJSON export, FastAPI read surface, local web console, and static GitHub Pages console are implemented and tested.
 
 ## What Works Today
 
@@ -16,10 +16,10 @@ Status: alpha, but the core CLI, SQLite storage, RSS ingest, credentialed Telegr
 - Media analysis for local files or URLs with EXIF, optional perceptual image hash, optional ffprobe video metadata, SHA-256 identity, entity hints, and optional storage.
 - SQLite-backed artifacts, provenance, sightings, case notes, delta listing, and GeoJSON export.
 - `ingress doctor`, `ingress status`, and `ingress ingest sample` for local verification without network access.
-- FastAPI skeleton exposing `/health`, `/artifacts`, `/sightings`, and an explicit operator-driven `/ingest` placeholder.
+- FastAPI web/API surface exposing `/health`, `/artifacts`, `/sightings`, `/api/dashboard`, `/api/sample`, and an explicit operator-driven `/ingest` placeholder.
 - Ruff, mypy, and pytest coverage for the current core behavior.
 
-Not implemented yet: Postgres/PostGIS migrations, Docker Compose, ADS-B/AIS/Sentinel collectors, full X collection (stub only; requires paid API), fusion/corroboration scoring, local LLM extraction, and a web dashboard.
+Not implemented yet: Postgres/PostGIS migrations, Docker Compose, ADS-B/AIS/Sentinel collectors, full X collection (stub only; requires paid API), fusion/corroboration scoring, and local LLM extraction.
 
 ## What's New (v0.2)
 - Dramatically expanded public source lists for Iran, Russia, and China (many more RSS feeds from Defense News sections, Kyiv Independent, RealClearDefense, Tasnim, Mehr, SCMP, China defense blogs, Al Jazeera, ISW, etc.).
@@ -83,7 +83,19 @@ uvicorn ingress.api:app --host 127.0.0.1 --port 8765
 open http://127.0.0.1:8765
 ```
 
-The web console reads the same SQLite store as the CLI, shows target tabs for Comprehensive/Iran/Russia/China, exposes clickable source links, renders criticality colors with recorded reasons, and includes a local sample-data button for smoke testing. Collection remains operator-driven through the CLI commands shown in the app.
+The web console reads the same SQLite store as the CLI, shows target tabs for Comprehensive/Iran/Russia/China, exposes clickable source links, renders criticality colors with recorded reasons, and includes a local sample-data button for smoke testing. Collection remains operator-driven through the CLI commands shown in the app. The Auto toggle refreshes the dashboard every 15 minutes.
+
+## GitHub Pages Preview
+
+The same static web bundle is published by GitHub Actions from `src/ingress/web` as a GitHub Pages application. It uses the local API when served by FastAPI and falls back to `assets/dashboard-static.json` when `/api/dashboard` is unavailable, such as on GitHub Pages.
+
+Expected Pages URL after the workflow deploys:
+
+```text
+https://veilriven-design.github.io/ingress-osint/
+```
+
+The Pages version cannot run collectors, mutate SQLite, or seed local sample data because GitHub Pages has no backend. Use the local FastAPI app above for live SQLite-backed collection and review.
 
 Ingest a public RSS feed:
 
@@ -159,6 +171,8 @@ Useful endpoints:
 - `GET /health`
 - `GET /artifacts?db_url=sqlite:///./data/ingress.db`
 - `GET /sightings?db_url=sqlite:///./data/ingress.db`
+- `GET /api/dashboard?target=comprehensive`
+- `POST /api/sample`
 - `POST /ingest` returns an explicit handoff to CLI collection so source access remains auditable.
 
 ## Verification

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ingress Web Console</title>
-    <link rel="stylesheet" href="/assets/styles.css" />
+    <link rel="stylesheet" href="assets/styles.css" />
   </head>
   <body>
     <div class="app-shell">
@@ -12,7 +12,10 @@
         <div class="brand-block">
           <div class="brand-mark" aria-hidden="true">IG</div>
           <div>
-            <h1>Ingress</h1>
+            <div class="brand-title-row">
+              <h1>Ingress</h1>
+              <span class="agency-seal" aria-hidden="true">ING</span>
+            </div>
             <p>Open-domain signal workbench</p>
           </div>
         </div>
@@ -58,7 +61,7 @@
             </button>
             <label class="toggle">
               <input id="autoRefresh" type="checkbox" />
-              <span>Auto</span>
+              <span>15m Auto</span>
             </label>
           </div>
         </header>
@@ -135,6 +138,6 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/assets/app.js" type="module"></script>
+    <script src="assets/app.js" type="module"></script>
   </body>
 </html>
