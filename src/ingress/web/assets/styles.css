@@ -11,8 +11,8 @@
   --accent: #123c66;
   --accent-strong: #0a2948;
   --accent-soft: #edf5fb;
-  --seal-gold: #c8a24a;
-  --seal-gold-dark: #94701e;
+  --emblem-gold: #c8a24a;
+  --emblem-gold-dark: #94701e;
   --high: #b42318;
   --elevated: #b7791f;
   --context: #2563eb;
@@ -78,21 +78,51 @@ a {
 
 .brand-block {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 12px;
   align-items: center;
 }
 
-.brand-mark {
+.brand-emblem {
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
+  width: 48px;
+  height: 48px;
   border: 1px solid #8fa8bd;
-  background: var(--accent);
-  color: #fff;
-  font-weight: 800;
   border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.12), transparent 45%),
+    var(--accent);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 6px 14px rgba(10, 41, 72, 0.16);
+}
+
+.brand-emblem svg {
+  width: 38px;
+  height: 38px;
+}
+
+.emblem-shield {
+  fill: rgba(10, 41, 72, 0.42);
+  stroke: #d9e6ef;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.emblem-arrow {
+  fill: var(--emblem-gold);
+  stroke: #f7fbff;
+  stroke-linejoin: round;
+  stroke-width: 1.1;
+}
+
+.emblem-horizon,
+.emblem-pulse {
+  fill: none;
+  stroke: #f7fbff;
+  stroke-linecap: round;
+  stroke-width: 1.8;
 }
 
 .brand-title-row {
@@ -100,33 +130,6 @@ a {
   align-items: center;
   gap: 8px;
   min-width: 0;
-}
-
-.agency-seal {
-  position: relative;
-  display: inline-grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 25px;
-  height: 25px;
-  border: 2px solid var(--seal-gold);
-  border-radius: 50%;
-  background: var(--accent-strong);
-  box-shadow:
-    inset 0 0 0 2px #f8fbfd,
-    0 0 0 1px #08223c;
-  color: #f8fbfd;
-  font-size: 7px;
-  font-weight: 900;
-  letter-spacing: 0.04em;
-}
-
-.agency-seal::before {
-  position: absolute;
-  inset: 6px;
-  border: 1px solid rgba(200, 162, 74, 0.76);
-  border-radius: 50%;
-  content: "";
 }
 
 .brand-block h1,
@@ -180,7 +183,7 @@ a {
 .target-tab.active {
   border-color: var(--accent);
   background: var(--accent-soft);
-  box-shadow: inset 3px 0 0 var(--seal-gold);
+  box-shadow: inset 3px 0 0 var(--emblem-gold);
   color: var(--accent-strong);
   font-weight: 700;
 }
@@ -636,7 +639,7 @@ a {
 
 .bar-fill {
   height: 100%;
-  background: var(--seal-gold-dark);
+  background: var(--emblem-gold-dark);
 }
 
 .rank-list {
