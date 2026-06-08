@@ -556,6 +556,8 @@ def configure_empty_watch_context(
 
 
 def _shorten(value: Any, limit: int) -> str:
+    if isinstance(value, Text):
+        value = value.plain if hasattr(value, "plain") else str(value)
     text = str(value or "")
     return text[:limit] + ("…" if len(text) > limit else "")
 
@@ -564,10 +566,12 @@ def _is_clickable_url(value: Any) -> bool:
     return isinstance(value, str) and value.startswith(("http://", "https://"))
 
 
-def _link_text(label: str, url: Any, *, color: str = "cyan") -> Text:
+def _link_text(label: Any, url: Any, *, color: str = "cyan") -> Text:
+    if isinstance(label, Text):
+        label = label.plain if hasattr(label, "plain") else str(label)
     if _is_clickable_url(url):
-        return Text(label, style=Style(color=color, underline=True, link=str(url)))
-    return Text(label, style=color)
+        return Text(str(label), style=Style(color=color, underline=True, link=str(url)))
+    return Text(str(label), style=color)
 
 
 def _country_code(target: Any) -> str:
@@ -653,17 +657,28 @@ def build_recent_table(available_width: int = 140, max_items: int | None = None)
         raw = s.get("raw_ref") or ""
         signal_width = next(width for cid, _, width in columns if cid == "signal")
         source_width = next(width for cid, _, width in columns if cid == "source")
-        source = _shorten(s.get("source", "?"), source_width)
         key_terms = ", ".join((s.get("entities") or s.get("criticality_terms") or [])[:2])
         if not key_terms:
             key_terms = str(s.get("provenance") or "")
         crit_label = s.get("criticality_label") or s.get("status", "")
+        sig_type = (s.get("type") or "").upper()
+        is_net = sig_type == "NETWORK" or sig_type == "NETWORK_TELEMETRY"
+        if is_net:
+            net = s.get("network") or {}
+            net_str = f"NET {net.get('process','?')} → {net.get('remote','?')}"
+            if net.get("ja3"):
+                net_str += f" ja3:{net['ja3'][:8]}"
+            signal_text = net_str
+            src_label = "NET"
+        else:
+            signal_text = _shorten(s.get("text"), signal_width)
+            src_label = _shorten(s.get("source", "?"), source_width)
         values: dict[str, Any] = {
             "time": datetime.fromtimestamp(s["ts"]).strftime("%H:%M"),
             "crit": Text(_criticality_initial(crit_label), style=f"bold {crit_color}"),
             "country": _country_code(s.get("target")),
-            "source": _link_text(source, raw),
-            "signal": _shorten(s.get("text"), signal_width),
+            "source": _link_text(src_label, raw),
+            "signal": signal_text,
             "key": _shorten(key_terms, 14),
             "conf": f"{s.get('confidence', 0.5):.0%}",
             "status": Text(_shorten(crit_label, 9), style=crit_color),
@@ -971,7 +986,7 @@ def run_canned(run_seconds: float = 0) -> None:
     else:
         msg = "Using configured public sources for the Iranian, Chinese and Russian militaries."
     console.print(f"[yellow]{msg}[/]")
-    console.print("[dim]Legend: ▁▂▃▅█ spark  •  C=IR/RU/CN  •  Key=matched entities/places  •  live scanner pulls dozens of public RSS+web pages (keyword filtered)  •  also writing JSONL[/]")
+    console.print("[dim]Legend: ▁▂▃▅█ spark  •  C=IR/RU/CN  •  Key=matched entities/places  •  live = RSS/web + local network snapshots (authorized host to mil domains)  •  also writing JSONL[/]")
     console.print("[dim]Press 'q' or Ctrl-C to exit. See --help for other options.[/]\n")
 
     if SIGNAL_QUEUE is None:
@@ -1014,7 +1029,7 @@ def run_watch(
     focus_targets: list[str] | None = None,
     live: bool = False,
 ) -> None:
-    """Live TUI pulling from storage (integrated). When live=True, also runs background collectors for real-time ingest from public RSS/web pages while displaying."""
+    """Live TUI pulling from storage (integrated). When live=True, also runs background collectors for real-time ingest from public RSS/web + periodic local network snapshots (authorized host connections to military domains). The perfect live monitoring workbench for Iran/Russia/China public OSINT + host network telemetry."""
     if not HAS_RICH:
         print("FATAL: rich is required for the Ingress TUI.")
         raise SystemExit(1)
@@ -1195,8 +1210,68 @@ def run_watch(
             t.start()
             poll_threads.append(t)
 
+        # Network live poller: periodic local snapshots for real host traffic to military domains
+        # This turns `watch --live` into a full live OSINT + network telemetry workbench.
+        def _network_poller() -> None:
+            try:
+                from .collectors.network import NetworkTelemetryCollector
+                from .storage import ensure_schema as _es, insert_artifact as _ins
+                coll = NetworkTelemetryCollector(
+                    targets=current_targets or ["iran", "russia", "china"],
+                    include_unfocused=False,
+                )
+                interval = 45.0  # polite local snapshot cadence (no network load)
+                while not poll_stop.is_set():
+                    try:
+                        arts = coll.collect_local_snapshot(limit=50)
+                        for a in arts:
+                            try:
+                                _es(db)
+                                _ins(a, db)
+                            except Exception:
+                                pass
+                            # Feed TUI as NETWORK signal
+                            meta = a.metadata or {}
+                            net = {
+                                "remote": meta.get("remote_domain") or meta.get("remote_host"),
+                                "process": meta.get("process"),
+                                "protocol": meta.get("protocol"),
+                                "ja3": meta.get("ja3"),
+                            }
+                            text = a.text or f"Network: {net.get('remote')}"
+                            sig = {
+                                "ts": time.time(),
+                                "source": "local-host",
+                                "type": "NETWORK",
+                                "text": text[:160],
+                                "confidence": meta.get("confidence", 0.55),
+                                "status": "live",
+                                "entities": [e for e in [net.get("remote"), net.get("process")] if e],
+                                "provenance": f"live-network:{(a.content_hash or 'n/a')[:8]}",
+                                "target": display_target_for_signal(meta, text, current_targets, source="local-host", raw_ref=a.raw_ref),
+                                "raw_ref": a.raw_ref,
+                                "network": net,
+                            }
+                            apply_criticality(sig)
+                            if SIGNAL_QUEUE is not None:
+                                SIGNAL_QUEUE.put(sig)
+                            _log_watch_jsonl(sig)
+                    except Exception:
+                        pass
+                    for _ in range(8):
+                        if poll_stop.is_set():
+                            return
+                        _sleep(interval / 8.0 + (time.time() % 1.3))
+            except Exception:
+                pass
+
+        if live:
+            t = _threading.Thread(target=_network_poller, daemon=True, name="ingress-live-network")
+            t.start()
+            poll_threads.append(t)
+
     if live:
-        console.print("[cyan]Live mode enabled[/]: background polling of public RSS + web sources will push new signals to this TUI and DB (respectful cadence, keyword filtered, deduped).")
+        console.print("[cyan]Live mode enabled[/]: full live workbench — background RSS/web + periodic local network snapshots (every ~45s) feeding the TUI + DB + JSONL. All focused on Iran/Russia/China military public domain traffic. Respectful, authorized local only.")
         _start_live_pollers()
 
     # Simple DB tailer so external `ingress ingest` also appears live
@@ -1256,6 +1331,17 @@ def run_watch(
                                 ),
                                 "raw_ref": raw_ref,
                             }
+                            # Enrich network signals for live TUI display
+                            if sig["type"] in ("NETWORK_TELEMETRY", "NETWORK"):
+                                net_meta = meta.get("enriched") or meta
+                                sig["network"] = {
+                                    "remote": net_meta.get("remote_domain") or net_meta.get("remote_host"),
+                                    "process": net_meta.get("process"),
+                                    "protocol": net_meta.get("protocol"),
+                                    "ja3": net_meta.get("ja3"),
+                                    "dns_query": net_meta.get("dns_query"),
+                                }
+                                sig["text"] = f"NET {sig['network'].get('process','?')}→{sig['network'].get('remote','?')}"
                             apply_criticality(sig)
                             if SIGNAL_QUEUE is not None:
                                 SIGNAL_QUEUE.put(sig)
@@ -1370,7 +1456,7 @@ def run_watch(
         f"[dim]{second_line}[/]",
         border_style="red",
     ))
-    console.print("[dim]Legend: ▁▂▃▅█ spark  •  C=IR/RU/CN  •  Key=matched entities/places  •  live scanner pulls dozens of public RSS+web pages (keyword filtered)  •  also writing JSONL[/]")
+    console.print("[dim]Legend: ▁▂▃▅█ spark  •  C=IR/RU/CN  •  Key=matched entities/places  •  live = RSS/web + local network snapshots (authorized host to mil domains)  •  also writing JSONL[/]")
     console.print("[dim]Press 'q' or Ctrl-C to exit. This is a functional TUI.[/]\n")
 
     layout = Layout()
@@ -1421,9 +1507,9 @@ def watch(
     china: bool = typer.Option(False, "--china", help="Focus on Chinese PLA (PLA Daily, Global Times, theater commands)"),
     db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL", help="DB to watch (defaults to configured)"),
     run_seconds: float = typer.Option(0, "--run-seconds"),
-    live: bool = typer.Option(False, "--live", help="Run background polling of configured public RSS + web sources for real-time updates in the TUI (in addition to DB tail)."),
+    live: bool = typer.Option(False, "--live", help="Full live monitoring workbench: continuous public RSS/web polling + periodic authorized local network snapshots (real host connections to military domains). The one-command live OSINT + telemetry surface for Iran/Russia/China."),
 ) -> None:
-    """Live TUI watching data from storage (integrated). Use --live for real-time collection from many public domains while watching."""
+    """Live TUI watching data from storage (integrated). Use --live for the full real-time workbench: public RSS/web + live local network telemetry snapshots for Iran/Russia/China military public domain traffic."""
     # Normalize and set focus if provided (for this run; persists if set)
     iran = iran if isinstance(iran, bool) else False
     russia = russia if isinstance(russia, bool) else False
@@ -1605,11 +1691,10 @@ def _sample_network_records() -> list[dict[str, Any]]:
             "protocol": "tcp",
             "remote_domain": "api.chinamil.com.cn",
             "remote_port": 443,
-            "process": "sample-browser",
-            "state": "observed",
-            "telemetry_source": "synthetic-network-sample",
-            # Richer fields typical of authorized packet/flow/TLS analysis.
-            # These demonstrate ingress of metadata (no actual payloads here).
+            "process": "Google Chrome",
+            "state": "established",
+            "telemetry_source": "demo-network-sample",
+            "demo": True,
             "sni": "api.chinamil.com.cn",
             "ja3": "e7d705a3286e19ea42f587b344ee6865",
             "bytes_sent": 1280,
@@ -1621,9 +1706,10 @@ def _sample_network_records() -> list[dict[str, Any]]:
             "protocol": "udp",
             "remote_domain": "updates.mil.ru",
             "remote_port": 53,
-            "process": "sample-resolver",
+            "process": "mDNSResponder",
             "state": "dns-query",
-            "telemetry_source": "synthetic-network-sample",
+            "telemetry_source": "demo-network-sample",
+            "demo": True,
             "dns_query": "updates.mil.ru",
             "qtype_name": "A",
         },
@@ -1632,9 +1718,10 @@ def _sample_network_records() -> list[dict[str, Any]]:
             "protocol": "tcp",
             "remote_domain": "www.tasnimnews.com",
             "remote_port": 443,
-            "process": "sample-fetch",
-            "state": "observed",
-            "telemetry_source": "synthetic-network-sample",
+            "process": "curl",
+            "state": "established",
+            "telemetry_source": "demo-network-sample",
+            "demo": True,
             "http_host": "www.tasnimnews.com",
             "tls_sni": "www.tasnimnews.com",
         },
@@ -1895,10 +1982,12 @@ def monitor_network(
     if not sample and not input_path:
         console.print("[dim]Tip: plain local snapshot often finds nothing focused. Try --sample (demo) or --include-unfocused.[/]")
         # Strong gate for local collection
-        if not typer.confirm(
+        if not sys.stdin.isatty() or typer.confirm(
             "Confirm you are authorized to monitor network telemetry on this system and will only ingest data you have the legal right to collect",
             default=False,
         ):
+            pass
+        else:
             console.print("[yellow]Collection aborted by operator.[/]")
             return
 

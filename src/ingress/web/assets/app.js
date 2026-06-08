@@ -11,6 +11,7 @@ const state = {
   lastSnapshotKey: "",
   lastSnapshotStatus: "",
   networkError: "",
+  lastNetworkMode: "",
 };
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
@@ -48,6 +49,7 @@ const els = {
   autoRefresh: document.querySelector("#autoRefresh"),
   seedSample: document.querySelector("#seedSample"),
   seedNetwork: document.querySelector("#seedNetwork"),
+  captureLiveNetwork: document.querySelector("#captureLiveNetwork"),
   copyLive: document.querySelector("#copyLive"),
   copyIngest: document.querySelector("#copyIngest"),
   copyNetwork: document.querySelector("#copyNetwork"),
@@ -143,6 +145,21 @@ function networkSearchText(observation) {
   ]
     .join(" ")
     .toLowerCase();
+}
+
+function isSyntheticNetwork(observation) {
+  const net = observation.network || {};
+  const proc = (net.process || "").toLowerCase();
+  const src = (net.telemetry_source || observation.provenance || "").toLowerCase();
+  const meta = observation.metadata || net || {};
+  const isDemo = !!(meta.demo || net.demo || (src.includes("demo") || src.includes("sample") || src.includes("synthetic")));
+  return proc.startsWith("sample-") || isDemo;
+}
+
+function isMilitaryDomain(observation) {
+  const net = observation.network || {};
+  const dom = (net.remote_domain || net.remote_host || "").toLowerCase();
+  return dom.includes("chinamil") || dom.includes("mil.ru") || dom.includes("tasnimnews") || (net.matched_network_indicators || []).some(i => String(i).toLowerCase().includes("domain_suffix"));
 }
 
 function formatBytes(value) {
@@ -254,10 +271,20 @@ function networkPayloadForCurrentTarget(payload, mode, fallbackError = null) {
   const dbUrl = dbUrlForCommands(state.payload || payload);
   const rawObservations = payload?.observations || [];
   const observations =
-    mode === "static"
+    mode === "static" || mode === "live-local"
       ? rawObservations.filter((observation) => signalMatchesTarget(observation, target))
       : rawObservations;
-  const summary = payload?.summary && mode !== "static" ? payload.summary : networkSummary(observations);
+  const derivedSummary = networkSummary(observations);
+  const payloadSummary = payload?.summary && mode !== "static" ? payload.summary : {};
+  const summary = {
+    ...derivedSummary,
+    ...payloadSummary,
+    observations: observations.length,
+    domains: payloadSummary.domains || derivedSummary.domains,
+    protocols: payloadSummary.protocols || derivedSummary.protocols,
+    remote_ports: payloadSummary.remote_ports || derivedSummary.remote_ports,
+    processes: payloadSummary.processes || derivedSummary.processes,
+  };
   const commands = {
     monitor_network:
       payload?.commands?.monitor_network || state.payload?.commands?.network_monitor || networkCommandForTarget(target, dbUrl),
@@ -289,8 +316,12 @@ function setDashboardPayload(payload, mode, fallbackError = null) {
 }
 
 function setNetworkPayload(payload, mode, fallbackError = null) {
-  state.networkPayload = networkPayloadForCurrentTarget(payload || {}, mode, fallbackError);
+  const wrapped = networkPayloadForCurrentTarget(payload || {}, mode, fallbackError);
+  wrapped.is_live = mode === "live-local";
+  wrapped.mode = mode;
+  state.networkPayload = wrapped;
   state.networkError = fallbackError?.message || "";
+  state.lastNetworkMode = mode;
   renderNetwork();
 }
 
@@ -403,6 +434,34 @@ async function loadNetworkPayload({ mode = state.mode } = {}) {
   }
 }
 
+async function captureLiveLocalNetwork() {
+  const btn = els.captureLiveNetwork;
+  if (!btn) return;
+  if (state.payload?.mode === "static" || prefersStaticSnapshot()) {
+    showToast("Local snapshots require the local FastAPI app.");
+    return;
+  }
+  const originalText = btn.textContent;
+  btn.textContent = "Capturing...";
+  btn.disabled = true;
+  try {
+    const url = `/api/network/live?target=${encodeURIComponent(state.target)}&limit=150`;
+    const live = await fetchJson(url);
+    setNetworkPayload(live, "live-local");
+    const count = live?.summary?.observations || 0;
+    showToast(
+      count
+        ? `Focused local snapshot captured: ${count} target-domain observation(s).`
+        : "Focused local snapshot captured: no target-domain connections observed."
+    );
+  } catch (e) {
+    showToast("Live capture failed: " + (e.message || e));
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled = false;
+  }
+}
+
 function render() {
   renderHeader();
   renderSignals();
@@ -451,6 +510,13 @@ function renderHeader() {
   els.seedNetwork.disabled = payload.mode === "static";
   els.seedNetwork.title =
     payload.mode === "static" ? "Network sample seeding requires the local FastAPI API." : "Seed local network telemetry";
+  if (els.captureLiveNetwork) {
+    els.captureLiveNetwork.disabled = payload.mode === "static";
+    els.captureLiveNetwork.title =
+      payload.mode === "static"
+        ? "Focused local snapshots require the local FastAPI API."
+        : "Capture a focused local connection-table snapshot for the selected public target domains";
+  }
 }
 
 function filteredNetworkObservations() {
@@ -479,7 +545,8 @@ function renderNetwork() {
   const summary = payload.summary || networkSummary(observations);
   const errorSuffix = payload.fallback_error ? " / network API unavailable" : "";
   els.metricNetwork.textContent = String(summary.observations || 0);
-  els.networkResultCount.textContent = `${observations.length} shown${errorSuffix}`;
+  const liveSuffix = payload.is_live ? " (focused local snapshot)" : "";
+  els.networkResultCount.textContent = `${observations.length} shown${errorSuffix}${liveSuffix}`;
   els.networkCount.textContent = String(summary.observations || 0);
   els.networkDomains.textContent = String(summary.domains?.length || 0);
   els.networkProtocols.textContent = String(summary.protocols?.length || 0);
@@ -499,11 +566,27 @@ function renderNetwork() {
         .join("")
     : '<span class="muted">No network telemetry observations yet.</span>';
 
+  // Demo / synthetic warning
+  const hasSynthetic = observations.some(isSyntheticNetwork);
+  const warningEl = document.getElementById("networkDemoWarning");
+  if (warningEl) {
+    warningEl.style.display = hasSynthetic ? "block" : "none";
+  }
+
   if (!observations.length) {
-    const message = payload.fallback_error
-      ? `Network API unavailable: ${payload.fallback_error}`
-      : "No network telemetry observations match the current target/search.";
-    els.networkBody.innerHTML = `<tr><td colspan="5" class="empty-state">${escapeHtml(message)}</td></tr>`;
+    let message;
+    if (payload.fallback_error) {
+      message = `Network API unavailable: ${payload.fallback_error}`;
+    } else if (payload.is_live) {
+      message = "Focused local snapshot captured, but no public-domain network observations matched the selected target. That can be normal when this host is not currently connected to those domains.";
+    } else {
+      message = "No network telemetry observations match the current target/search.\n\n" +
+        "To see data here:\n" +
+        "• Click 'Capture local snapshot' for a focused connection-table check on this host\n" +
+        "• Or run: ingress monitor network --input telemetry.jsonl --db-url sqlite:///./data/ingress.db\n" +
+        "• Use 'Seed demo' only for a clearly labeled local smoke test.";
+    }
+    els.networkBody.innerHTML = `<tr><td colspan="5" class="empty-state">${escapeHtml(message).replace(/\n/g, '<br>')}</td></tr>`;
     return;
   }
 
@@ -511,13 +594,29 @@ function renderNetwork() {
     .map((observation) => {
       const selected = observation.id === state.selectedId ? " selected" : "";
       const network = observation.network || {};
+      const isSynth = isSyntheticNetwork(observation);
+      const isMil = isMilitaryDomain(observation);
+      const synthClass = isSynth ? " synthetic" : "";
+      const milClass = isMil ? " military-ioc" : "";
+      const rowClass = `${selected}${synthClass}${milClass}`;
+
+      const remote = escapeHtml(short(formatNetworkRemote(observation), 38));
+      const proc = escapeHtml(short(network.process || "--", 22));
       const indicators = (network.matched_network_indicators || []).slice(0, 2).join(", ");
-      return `<tr class="${selected}" data-id="${escapeHtml(observation.id)}">
-        <td><strong>${escapeHtml(short(formatNetworkRemote(observation), 42))}</strong><span>${escapeHtml(formatTime(observation.timestamp))}</span></td>
+      const flow = escapeHtml(short(formatNetworkFlow(network), 60));
+      const conf = observation.confidence ? `${Math.round((observation.confidence || 0.5) * 100)}%` : "--";
+      const note = isSynth ? "DEMO SAMPLE" : (isMil ? "Target-domain touch" : (observation.criticality_label || "routine"));
+
+      return `<tr class="${rowClass}" data-id="${escapeHtml(observation.id)}">
+        <td>
+          <strong>${remote}</strong>
+          <span class="time">${escapeHtml(formatTime(observation.timestamp))}</span>
+          ${isMil ? '<span class="mil-pill">MIL</span>' : ''}
+        </td>
         <td class="nowrap">${escapeHtml((network.protocol || "--").toUpperCase())}</td>
-        <td>${escapeHtml(short(network.process || "--", 26))}</td>
-        <td class="term-line">${escapeHtml(short(indicators || observation.provenance || "metadata", 72))}</td>
-        <td>${escapeHtml(short(formatNetworkFlow(network), 72))}</td>
+        <td>${proc}${isSynth ? ' <span class="synth-badge">DEMO</span>' : ''}</td>
+        <td class="term-line">${escapeHtml(short(indicators || "metadata", 50))} <span class="flow-note">${flow}</span></td>
+        <td class="conf-col">${escapeHtml(conf)}<br><small>${escapeHtml(short(note, 18))}</small></td>
       </tr>`;
     })
     .join("");
@@ -559,11 +658,15 @@ function renderSignals() {
       const rawLink = isUrl(signal.raw_ref)
         ? `<a href="${escapeHtml(signal.raw_ref)}" target="_blank" rel="noreferrer">open</a>`
         : '<span class="muted">local</span>';
+      let srcCell = sourceLink;
+      if (signal.source_type === "network_telemetry" || (signal.type || "").toUpperCase().includes("NETWORK")) {
+        srcCell = `<span class="net-tag">NET</span> ${sourceLink}`;
+      }
       return `<tr class="${selected}" data-id="${escapeHtml(signal.id)}">
         <td class="nowrap">${escapeHtml(signal.time_label || formatTime(signal.timestamp))}</td>
         <td><span class="crit-cell ${criticalityClass(signal)}">${escapeHtml(criticalityInitial(signal))}</span></td>
         <td class="nowrap">${escapeHtml(signal.country_code || "--")}</td>
-        <td>${sourceLink}</td>
+        <td>${srcCell}</td>
         <td class="signal-text">${escapeHtml(short(signal.text, 170))}</td>
         <td class="term-line">${escapeHtml(short(terms || signal.provenance, 70))}</td>
         <td class="nowrap">${Math.round((signal.confidence || 0) * 100)}%</td>
@@ -582,7 +685,7 @@ function renderSignals() {
   });
 }
 
-function networkDetailRows(network) {
+function networkDetailRows(network, isSynth = false, isMil = false) {
   if (!network) return "";
   const remote = [network.remote_domain || network.remote_host || "unknown", network.remote_port].filter(Boolean).join(":");
   const local = [network.local_host, network.local_port].filter(Boolean).join(":") || "Not recorded";
@@ -592,14 +695,21 @@ function networkDetailRows(network) {
     network.schema || "",
   ].filter(Boolean);
   const indicators = (network.matched_network_indicators || []).join(", ") || "No indicators recorded";
+  const flow = formatNetworkFlow(network);
+  let extra = "";
+  if (isSynth) {
+    extra = `<dt>Triage</dt><dd class="synth-note"><strong>DEMO SAMPLE</strong> - This was seeded for smoke testing. Compare against imported telemetry, local snapshots, or ingress-*.jsonl before treating it as host activity.</dd>`;
+  } else if (isMil) {
+    extra = `<dt>Triage</dt><dd class="mil-note">Matched a configured public target domain. Review process lineage, hashes, and whether the connection was user-initiated before escalating.</dd>`;
+  }
   return `
       <dt>Remote</dt><dd>${escapeHtml(remote)}</dd>
       <dt>Local</dt><dd>${escapeHtml(local)}</dd>
-      <dt>Protocol</dt><dd>${escapeHtml((network.protocol || "--").toUpperCase())}</dd>
+      <dt>Protocol / State</dt><dd>${escapeHtml((network.protocol || "--").toUpperCase())} / ${escapeHtml(network.state || "observed")}</dd>
       <dt>Process</dt><dd>${escapeHtml(network.process || "Not recorded")}</dd>
-      <dt>State</dt><dd>${escapeHtml(network.state || "observed")}</dd>
-      <dt>Enrich</dt><dd>${escapeHtml(enriched.join(", ") || formatNetworkFlow(network))}</dd>
+      <dt>Enrich / Flow</dt><dd>${escapeHtml(enriched.join(" · ") || flow)}</dd>
       <dt>Indicators</dt><dd>${escapeHtml(indicators)}</dd>
+      ${extra}
     `;
 }
 
@@ -621,8 +731,17 @@ function renderDetail() {
     ? `<a href="${escapeHtml(signal.raw_ref)}" target="_blank" rel="noreferrer">${escapeHtml(signal.raw_ref)}</a>`
     : escapeHtml(signal.raw_ref || "No raw reference");
   els.detailBody.className = "detail-content";
+
+  const isNet = !!signal.network;
+  const isSynth = isNet && isSyntheticNetwork(signal);
+  const isMil = isNet && isMilitaryDomain(signal);
+
+  let extraHeader = "";
+  if (isSynth) extraHeader = ` <span class="synth-badge detail-badge">SYNTHETIC SAMPLE</span>`;
+  if (isMil && !isSynth) extraHeader = ` <span class="mil-pill detail-badge">TARGET DOMAIN</span>`;
+
   els.detailBody.innerHTML = `
-    <h4 class="detail-title">${escapeHtml(short(signal.text, 420))}</h4>
+    <h4 class="detail-title">${escapeHtml(short(signal.text, 420))}${extraHeader}</h4>
     <dl class="detail-grid">
       <dt>Source</dt><dd>${escapeHtml(signal.source)}</dd>
       <dt>Target</dt><dd>${escapeHtml(signal.target || "unknown")}</dd>
@@ -631,9 +750,10 @@ function renderDetail() {
       <dt>Terms</dt><dd>${escapeHtml(terms)}</dd>
       <dt>Entities</dt><dd>${escapeHtml(entities)}</dd>
       <dt>Raw Ref</dt><dd>${sourceLink}</dd>
-      ${networkDetailRows(signal.network)}
+      ${networkDetailRows(signal.network, isSynth, isMil)}
     </dl>
     <div class="reason-box">${escapeHtml(signal.criticality_reason || "No criticality reason recorded.")}</div>
+    ${isSynth ? `<div class="triage-box"><strong>Action:</strong> This is seeded demo telemetry. Use it for UI smoke testing, then compare against imported telemetry, local snapshots, or DB/JSONL timestamps for real analysis.</div>` : ""}
   `;
 }
 
@@ -724,7 +844,12 @@ els.searchInput.addEventListener("input", () => {
 els.refreshNow.addEventListener("click", () => {
   setRefreshButtonLoading(true);
   loadDashboard({ reason: "manual" })
-    .then((result) => showToast(result.message))
+    .then((result) => {
+      showToast(result.message);
+      if (state.mode === "api" && !prefersStaticSnapshot()) {
+        loadNetworkPayload({ mode: "api" });
+      }
+    })
     .catch((error) => showToast(`Refresh failed: ${error.message}`))
     .finally(() => setRefreshButtonLoading(false));
 });
@@ -734,9 +859,15 @@ els.autoRefresh.addEventListener("change", () => {
   state.timer = null;
   if (els.autoRefresh.checked) {
     state.timer = window.setInterval(() => {
-      loadDashboard({ reason: "auto" }).catch((error) => showToast(`Auto refresh failed: ${error.message}`));
+      loadDashboard({ reason: "auto" })
+        .then(() => {
+          if (state.mode === "api" && !prefersStaticSnapshot()) {
+            loadNetworkPayload({ mode: "api" });
+          }
+        })
+        .catch((error) => showToast(`Auto refresh failed: ${error.message}`));
     }, AUTO_REFRESH_MS);
-    showToast("Auto refresh every 15 min");
+    showToast("Auto refresh every 15 min (dashboard + network)");
   } else {
     showToast("Auto refresh off");
   }
@@ -773,6 +904,12 @@ els.seedNetwork.addEventListener("click", async () => {
   showToast(`Network sample: ${result.inserted_artifacts} artifact(s)`);
   await loadDashboard();
 });
+
+if (els.captureLiveNetwork) {
+  els.captureLiveNetwork.addEventListener("click", () => {
+    captureLiveLocalNetwork();
+  });
+}
 
 els.copyLive.addEventListener("click", () => {
   copyText(state.payload?.commands?.watch_live || "ingress watch --live", "Live command").catch(() =>

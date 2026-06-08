@@ -25,7 +25,7 @@ Not implemented yet: Postgres/PostGIS migrations, Docker Compose, ADS-B/AIS/Sent
 ## What's New (v0.2)
 - Dramatically expanded public source lists for Iran, Russia, and China (many more RSS feeds from Defense News sections, Kyiv Independent, RealClearDefense, Tasnim, Mehr, SCMP, China defense blogs, Al Jazeera, ISW, etc.).
 - New WebPageCollector for high-signal public pages without reliable RSS (e.g. chinamil.com.cn English, Understanding War, Tasnim home, SCMP PLA topics). Explicitly listed and keyword-filtered.
-- `ingress watch --live` : real-time background polling of your chosen public RSS + web sources while the TUI renders live updates (plus DB tailer for external ingests). Signals appear with provenance "live-rss:..." / "live-web:...".
+- `ingress watch --live` : real-time background polling of public RSS + web sources, plus explicit authorized local network telemetry support for target-domain review. Signals feed the adaptive TUI, DB, and append-only JSONL in real time with full provenance and criticality. Use `--iran --russia --china` for focused live OSINT on Iran/Russia/China public military traffic.
 - Adaptive watch display: narrow terminals get terse target/source/signal rows plus a compact color-code legend; wider terminals add confidence, status, key terms, and clickable link columns.
 - `ingress ingest web <public-url>` for ad-hoc page snapshots.
 - Better geoparsing (expanded military locations + optional geotext), stored in artifact metadata for TUI/entities panels.
@@ -84,7 +84,7 @@ uvicorn ingress.api:app --host 127.0.0.1 --port 8765
 open http://127.0.0.1:8765
 ```
 
-The web console reads the same SQLite store as the CLI, shows target tabs for Comprehensive/Iran/Russia/China, exposes clickable source links, turns observed-term chips into filters, renders criticality colors with recorded reasons, and includes a local sample-data button for smoke testing. Collection remains operator-driven through the CLI commands shown in the app. The Auto toggle refreshes the dashboard every 15 minutes.
+The web console reads the same SQLite store as the CLI, shows target tabs for Comprehensive/Iran/Russia/China, exposes clickable source links, turns observed-term chips into filters, renders criticality colors with recorded reasons, and includes clearly labeled local smoke-test controls. Network telemetry remains explicit: the app reviews stored/imported records and can request a focused local connection-table snapshot from the local FastAPI API; the static Pages bundle cannot capture or seed data. The Auto toggle refreshes the dashboard every 15 minutes.
 
 ## GitHub Pages Preview
 

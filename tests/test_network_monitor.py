@@ -132,6 +132,48 @@ def test_network_api_returns_network_observations(tmp_path) -> None:
     assert payload["observations"][0]["country_code"] == "IR"
 
 
+def test_network_api_is_not_starved_by_unfocused_telemetry(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'api-network-noise.db'}"
+    ensure_schema(database_url)
+    focused = NetworkTelemetryCollector(targets=["china"]).collect_from_records([
+        {
+            "timestamp": "2026-06-07T18:00:00Z",
+            "remote_domain": "api.chinamil.com.cn",
+            "remote_port": 443,
+            "protocol": "tcp",
+            "process": "browser",
+        }
+    ])[0]
+    insert_artifact(focused, database_url)
+    noise_records = [
+        {
+            "timestamp": f"2026-06-07T18:01:{index:02d}Z",
+            "remote_domain": f"example-{index}.org",
+            "remote_port": 443,
+            "protocol": "tcp",
+            "process": "browser",
+        }
+        for index in range(20)
+    ]
+    for artifact in NetworkTelemetryCollector(
+        targets=["china"],
+        include_unfocused=True,
+    ).collect_from_records(noise_records):
+        insert_artifact(artifact, database_url)
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/network",
+        params={"target": "china", "limit": 1, "db_url": database_url},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["observations"] == 1
+    assert payload["observations"][0]["network"]["remote_domain"] == "api.chinamil.com.cn"
+    assert payload["observations"][0]["country_code"] == "CN"
+
+
 def test_network_sample_endpoint_populates_network_dashboard(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'network-sample.db'}"
     client = TestClient(app)
@@ -149,7 +191,59 @@ def test_network_sample_endpoint_populates_network_dashboard(tmp_path) -> None:
     payload = response.json()
     assert payload["summary"]["observations"] == 1
     assert payload["observations"][0]["network"]["ja3"] == "e7d705a3286e19ea42f587b344ee6865"
+    assert payload["observations"][0]["network"]["telemetry_source"] == "web-console-sample"
+    assert payload["observations"][0]["network"]["demo"] is True
     assert payload["commands"]["monitor_network"].startswith("ingress monitor network --china")
+
+
+def test_network_live_endpoint_defaults_to_focused_target(monkeypatch) -> None:
+    from ingress.collectors import network as network_module
+
+    seen: dict[str, object] = {}
+
+    def fake_collect_local_snapshot(
+        self: NetworkTelemetryCollector,
+        limit: int | None = None,
+    ) -> list[object]:
+        seen["include_unfocused"] = self.include_unfocused
+        return self.collect_from_records(
+            [
+                {
+                    "timestamp": "2026-06-07T18:00:00Z",
+                    "remote_domain": "api.chinamil.com.cn",
+                    "remote_port": 443,
+                    "protocol": "tcp",
+                    "process": "browser",
+                },
+                {
+                    "timestamp": "2026-06-07T18:00:01Z",
+                    "remote_domain": "example.org",
+                    "remote_port": 443,
+                    "protocol": "tcp",
+                    "process": "browser",
+                },
+            ],
+            limit=limit,
+        )
+
+    monkeypatch.setattr(
+        network_module.NetworkTelemetryCollector,
+        "collect_local_snapshot",
+        fake_collect_local_snapshot,
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/network/live", params={"target": "china"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert seen["include_unfocused"] is False
+    assert payload["mode"] == "live-local"
+    assert payload["summary"]["focused_only"] is True
+    assert payload["summary"]["observations"] == 1
+    assert payload["summary"]["domains"] == [["api.chinamil.com.cn", 1]]
+    assert payload["observations"][0]["target"] == "china"
+    assert payload["observations"][0]["network"]["remote_domain"] == "api.chinamil.com.cn"
 
 
 def test_network_collector_accepts_richer_flow_metadata_and_exposes_enrich() -> None:

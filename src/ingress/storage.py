@@ -190,6 +190,46 @@ def get_recent_artifacts(limit: int = 30, db_url: str | None = None) -> list[dic
         conn.close()
 
 
+def get_recent_artifacts_excluding(
+    limit: int = 30,
+    db_url: str | None = None,
+    *,
+    excluded_source_types: tuple[str, ...] = (),
+    excluded_content_types: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """Return recent artifacts while excluding high-volume side panels."""
+    conn = _get_conn(db_url)
+    try:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if excluded_source_types:
+            placeholders = ", ".join("?" for _ in excluded_source_types)
+            clauses.append(f"COALESCE(source_type, '') NOT IN ({placeholders})")
+            params.extend(excluded_source_types)
+        if excluded_content_types:
+            placeholders = ", ".join("?" for _ in excluded_content_types)
+            clauses.append(f"COALESCE(content_type, '') NOT IN ({placeholders})")
+            params.extend(excluded_content_types)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT id, source_id, source_name, source_type, content_type, raw_ref,
+                   content_hash, fetched_at, text, metadata, media_path
+            FROM artifacts
+            {where}
+            ORDER BY fetched_at DESC
+            LIMIT ?
+        """,
+            params,
+        )
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def get_counts(db_url: str | None = None) -> dict[str, int]:
     """Return basic storage counts for status/doctor commands."""
     conn = _get_conn(db_url)

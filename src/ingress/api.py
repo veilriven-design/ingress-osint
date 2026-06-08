@@ -27,6 +27,7 @@ from .storage import (
     ensure_schema,
     get_counts,
     get_recent_artifacts,
+    get_recent_artifacts_excluding,
     get_sightings,
     insert_artifact,
     insert_sighting,
@@ -67,6 +68,7 @@ def _sample_network_records() -> list[dict[str, Any]]:
             "process": "sample-browser",
             "state": "observed",
             "telemetry_source": "web-console-sample",
+            "demo": True,
             "sni": "api.chinamil.com.cn",
             "ja3": "e7d705a3286e19ea42f587b344ee6865",
             "bytes_sent": 1280,
@@ -81,6 +83,7 @@ def _sample_network_records() -> list[dict[str, Any]]:
             "process": "sample-resolver",
             "state": "dns-query",
             "telemetry_source": "web-console-sample",
+            "demo": True,
             "dns_query": "updates.mil.ru",
             "qtype_name": "A",
         },
@@ -92,6 +95,7 @@ def _sample_network_records() -> list[dict[str, Any]]:
             "process": "sample-fetch",
             "state": "observed",
             "telemetry_source": "web-console-sample",
+            "demo": True,
             "http_host": "www.tasnimnews.com",
             "tls_sni": "www.tasnimnews.com",
         },
@@ -246,7 +250,12 @@ def _dashboard_payload(target: str, limit: int, db_url: str | None) -> dict[str,
     ensure_schema(url)
     target_key = target if target in TARGETS else "comprehensive"
     targets = _target_list(target_key)
-    rows = get_recent_artifacts(max(limit * 3, 60), url)
+    rows = get_recent_artifacts_excluding(
+        max(limit * 3, 60),
+        url,
+        excluded_source_types=("network_telemetry",),
+        excluded_content_types=("network_telemetry",),
+    )
     signals = []
     for row in rows:
         signal = _dashboard_signal(row, targets)
@@ -300,7 +309,9 @@ def _network_payload(target: str, limit: int, db_url: str | None) -> dict[str, A
     ensure_schema(url)
     target_key = target if target in TARGETS else "comprehensive"
     targets = _target_list(target_key)
-    rows = get_recent_artifacts(max(limit * 5, 100), url)
+    # Network snapshots can be high-volume. Scan a wider local window so
+    # unfocused connection-table noise does not hide target-domain telemetry.
+    rows = get_recent_artifacts(max(limit * 20, 1000), url)
     observations: list[dict[str, Any]] = []
     domain_counts: Counter[str] = Counter()
     protocol_counts: Counter[str] = Counter()
@@ -325,14 +336,16 @@ def _network_payload(target: str, limit: int, db_url: str | None) -> dict[str, A
             "protocol": meta.get("protocol"),
             "process": meta.get("process"),
             "state": meta.get("state"),
+            "telemetry_source": meta.get("telemetry_source"),
+            "demo": bool(meta.get("demo")),
             "matched_network_indicators": meta.get("matched_network_indicators") or [],
             "schema": meta.get("compatibility_schema"),
             "enriched": meta.get("enriched"),
             "ja3": meta.get("ja3") or (meta.get("enriched") or {}).get("ja3"),
             "dns_query": meta.get("dns_query") or (meta.get("enriched") or {}).get("dns_query"),
             "bytes": {
-                "sent": (meta.get("enriched") or {}).get("bytes_sent"),
-                "received": (meta.get("enriched") or {}).get("bytes_received"),
+                "sent": (meta.get("enriched") or {}).get("bytes_sent") or meta.get("bytes_sent"),
+                "received": (meta.get("enriched") or {}).get("bytes_received") or meta.get("bytes_received"),
             },
         }
         signal["network"] = network
@@ -477,6 +490,108 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         try:
             return _network_payload(target, limit, db_url)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/api/network/live")
+    def network_live(
+        target: str = Query("comprehensive", pattern="^(comprehensive|iran|russia|china)$"),
+        limit: int = Query(100, ge=1, le=500),
+        include_unfocused: bool = Query(False),
+    ) -> dict[str, Any]:
+        """
+        Perform a *fresh live local snapshot* of this host's connections (lsof/ss/netstat)
+        and return normalized network telemetry observations.
+
+        This makes the web console able to show *real* host network activity
+        (authorized local only) on demand, instead of only seeded or DB data.
+        No packets are captured; only current connection metadata is read.
+        """
+        try:
+            from .collectors.network import NetworkTelemetryCollector
+
+            targets = _target_list(target)
+            coll = NetworkTelemetryCollector(
+                targets=targets,
+                include_unfocused=include_unfocused,
+                source_id="live-local-snapshot",
+                name="Live Local Snapshot",
+            )
+            arts = coll.collect_local_snapshot(limit=limit)
+
+            observations = []
+            domain_counts: Counter[str] = Counter()
+            protocol_counts: Counter[str] = Counter()
+            port_counts: Counter[str] = Counter()
+            process_counts: Counter[str] = Counter()
+            for art in arts:
+                m = art.metadata or {}
+                network = {
+                    "remote_host": m.get("remote_host"),
+                    "remote_domain": m.get("remote_domain"),
+                    "remote_port": m.get("remote_port"),
+                    "local_host": m.get("local_host"),
+                    "local_port": m.get("local_port"),
+                    "protocol": m.get("protocol"),
+                    "process": m.get("process"),
+                    "state": m.get("state"),
+                    "ja3": m.get("ja3"),
+                    "dns_query": m.get("dns_query"),
+                    "bytes": {"sent": m.get("bytes_sent"), "received": m.get("bytes_received")},
+                    "matched_network_indicators": m.get("matched_network_indicators", []),
+                    "telemetry_source": m.get("telemetry_source"),
+                    "demo": bool(m.get("demo")),
+                }
+                obs = {
+                    "id": str(art.id),
+                    "timestamp": art.fetched_at.isoformat(),
+                    "time_label": art.fetched_at.strftime("%H:%M:%S"),
+                    "source": art.source.name,
+                    "source_type": "network_telemetry",
+                    "text": art.text,
+                    "target": (m.get("target_countries") or [None])[0] or "unfocused",
+                    "country_code": ({"iran": "IR", "russia": "RU", "china": "CN"}.get((m.get("target_countries") or [None])[0], "--")),
+                    "confidence": m.get("confidence", 0.55),
+                    "status": m.get("status", "live"),
+                    "entities": m.get("entities", []),
+                    "provenance": "live-local",
+                    "raw_ref": art.raw_ref,
+                    "metadata": m,
+                    "network": network,
+                }
+                observations.append(obs)
+                domain_counts.update([str(network.get("remote_domain") or network.get("remote_host") or "unknown")])
+                protocol_counts.update([str(network.get("protocol") or "unknown")])
+                port_counts.update([str(network.get("remote_port") or "unknown")])
+                process_counts.update([str(network.get("process") or "unknown")])
+
+            return {
+                "status": "ok",
+                "version": __version__,
+                "mode": "live-local",
+                "target": target,
+                "target_label": TARGET_LABELS.get(target, TARGET_LABELS["comprehensive"]),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "summary": {
+                    "observations": len(observations),
+                    "domains": domain_counts.most_common(10),
+                    "protocols": protocol_counts.most_common(),
+                    "remote_ports": port_counts.most_common(10),
+                    "processes": process_counts.most_common(10),
+                    "is_live": True,
+                    "focused_only": not include_unfocused,
+                    "note": "Fresh local connection-table snapshot. Focused on configured public target domains by default.",
+                },
+                "commands": {
+                    "monitor_network": (
+                        f"ingress monitor network --{target} --db-url {get_db_url()}"
+                        if target != "comprehensive"
+                        else f"ingress monitor network --db-url {get_db_url()}"
+                    ),
+                    "import_jsonl": f"ingress monitor network --input telemetry.jsonl --db-url {get_db_url()}",
+                },
+                "observations": observations,
+            }
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 

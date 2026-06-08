@@ -927,6 +927,8 @@ class NetworkTelemetryCollector:
             "verification_status": "unverified",
             "compatibility_schema": "ingress.network_telemetry.v1",
         }
+        if record.get("demo") is not None:
+            metadata["demo"] = bool(record.get("demo"))
         if enrich:
             metadata["enriched"] = enrich
             # promote a few top-level for convenience in API / watch

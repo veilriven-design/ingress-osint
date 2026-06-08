@@ -91,11 +91,12 @@
         <section class="network-panel" aria-label="Network telemetry">
           <div class="panel-heading network-heading">
             <div>
-              <h3>Network Telemetry</h3>
+              <h3>Network Telemetry Review</h3>
               <span id="networkResultCount">0 observations</span>
             </div>
             <div class="network-actions">
-              <button id="seedNetwork" class="mini-button" type="button">Seed sample</button>
+              <button id="seedNetwork" class="mini-button" type="button">Seed demo</button>
+              <button id="captureLiveNetwork" class="mini-button" type="button" title="Capture a focused local connection-table snapshot for selected public target domains">Capture local snapshot</button>
               <button id="copyNetwork" class="mini-button secondary" type="button">Copy monitor</button>
               <button id="copyNetworkImport" class="mini-button secondary" type="button">Copy import</button>
             </div>
@@ -107,21 +108,34 @@
             <div><span>Updated</span><strong id="networkUpdated">--</strong></div>
           </div>
           <div id="networkHighlights" class="network-highlights"></div>
+
+          <div id="networkDemoWarning" class="demo-warning" style="display:none;">
+            <strong>DEMO / SYNTHETIC DATA DETECTED</strong>
+            <span>Processes named <code>sample-*</code> or telemetry marked <code>demo</code>, <code>sample</code>, or <code>synthetic</code> are smoke-test records. They are not proof of real host activity.</span>
+            <div class="triage-hints">
+              Next: compare against imported telemetry, focused local snapshots, or <code>ingress-*.jsonl</code> timestamps before treating a row as operational evidence.
+            </div>
+          </div>
+
           <div class="network-table-wrap">
             <table class="network-table">
               <thead>
                 <tr>
-                  <th>Remote</th>
+                  <th>Remote / IOC</th>
                   <th>Proto</th>
                   <th>Process</th>
-                  <th>Indicators</th>
-                  <th>Flow</th>
+                  <th>Indicators / Flow</th>
+                  <th>Conf / Note</th>
                 </tr>
               </thead>
               <tbody id="networkBody">
                 <tr><td colspan="5" class="empty-state">Loading network telemetry...</td></tr>
               </tbody>
             </table>
+          </div>
+
+          <div class="triage-actions">
+            <small>Recommended triage for target-domain touches: source provenance, passive DNS, process hash, socket owner, and whether the connection was user-initiated.</small>
           </div>
         </section>
 
