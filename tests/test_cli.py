@@ -24,6 +24,43 @@ def test_db_init_command_creates_sqlite_schema(tmp_path) -> None:
     assert "Schema ensured" in result.output
 
 
+def test_status_points_to_sample_ingest_when_empty(tmp_path) -> None:
+    database = tmp_path / "empty.db"
+    result = runner.invoke(app, ["status", "--db-url", f"sqlite:///{database}"])
+
+    assert result.exit_code == 0
+    assert "No artifacts yet" in result.output
+    assert "ingress ingest sample" in result.output
+
+
+def test_sample_ingest_populates_status_and_deduplicates(tmp_path) -> None:
+    database = tmp_path / "sample.db"
+    db_url = f"sqlite:///{database}"
+
+    first = runner.invoke(app, ["ingest", "sample", "--db-url", db_url])
+    second = runner.invoke(app, ["ingest", "sample", "--db-url", db_url])
+    status = runner.invoke(app, ["status", "--db-url", db_url])
+
+    assert first.exit_code == 0
+    assert "Inserted 3 artifacts and 3 sightings" in first.output
+    assert second.exit_code == 0
+    assert "Inserted 0 artifacts and 0 sightings" in second.output
+    assert status.exit_code == 0
+    assert "Artifacts:" in status.output
+    assert "Sample Defense RSS" in status.output
+
+
+def test_doctor_reports_runtime_table(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("INGRESS_STATE_DIR", str(tmp_path / "state"))
+    database = tmp_path / "doctor.db"
+
+    result = runner.invoke(app, ["doctor", "--db-url", f"sqlite:///{database}"])
+
+    assert result.exit_code == 0
+    assert "Ingress Doctor" in result.output
+    assert "SQLite DB" in result.output
+
+
 def test_rss_dry_run_accepts_local_feed(tmp_path) -> None:
     feed = tmp_path / "feed.xml"
     feed.write_text(
@@ -48,3 +85,18 @@ def test_rss_dry_run_accepts_local_feed(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Parsed 1 candidate" in result.output
     assert "--dry-run: nothing written" in result.output
+
+
+def test_analyze_is_non_interactive_by_default(tmp_path) -> None:
+    media = tmp_path / "sample.jpg"
+    media.write_bytes(b"sample media bytes")
+    database = tmp_path / "media.db"
+
+    result = runner.invoke(
+        app,
+        ["analyze", str(media), "--store", "--db-url", f"sqlite:///{database}"],
+    )
+
+    assert result.exit_code == 0
+    assert "Media Analysis Summary" in result.output
+    assert "Stored as Artifact" in result.output

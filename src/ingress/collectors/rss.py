@@ -48,6 +48,7 @@ class RSSCollector:
         self.credibility_prior = credibility_prior
         self.tos_summary = tos_summary
         self.keywords = [k.lower() for k in (keywords or [])]
+        self.diagnostics: list[str] = []
 
     def _derive_source_id(self, url: str) -> str:
         # Stable short id from URL
@@ -76,6 +77,7 @@ class RSSCollector:
         if feedparser is None:
             raise RuntimeError("RSS ingest requires feedparser. Install with: pip install -e '.[full]'")
 
+        self.diagnostics = []
         source = self._make_source()
         artifacts: list[Artifact] = []
 
@@ -83,7 +85,14 @@ class RSSCollector:
             if limit is not None and len(artifacts) >= limit:
                 break
             feed = feedparser.parse(url)
-            for entry in feed.entries:
+            bozo_exception = getattr(feed, "bozo_exception", None)
+            if bozo_exception:
+                self.diagnostics.append(f"{url}: {bozo_exception}")
+            entries = list(getattr(feed, "entries", []) or [])
+            if not entries:
+                self.diagnostics.append(f"{url}: no RSS/Atom entries parsed")
+                continue
+            for entry in entries:
                 if limit is not None and len(artifacts) >= limit:
                     break
                 link = entry.get("link") or entry.get("id")

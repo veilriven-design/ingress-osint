@@ -17,10 +17,13 @@ channels (e.g. Rybar for Russia, Tasnim/Fars for Iran, PLA Daily/Global Times fo
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
+from .state import target_state_file
+
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from .models import Artifact
 
 
@@ -210,6 +213,7 @@ def _run_target_collectors(
     config: TargetConfig,
     limit: int = 50,
     db_url: str | None = None,
+    diagnostics: list[str] | None = None,
 ) -> list["Artifact"]:
     """Internal: run RSS + Telegram (if creds) with the given config."""
     from .collectors.rss import RSSCollector
@@ -220,6 +224,8 @@ def _run_target_collectors(
     if config.get("rss_feeds"):
         rss = RSSCollector(config["rss_feeds"], keywords=config.get("keywords"))
         arts = rss.collect(limit=limit)
+        if diagnostics is not None:
+            diagnostics.extend(rss.diagnostics)
         artifacts.extend(arts)
         if db_url:
             ensure_schema(db_url)
@@ -247,53 +253,81 @@ def _run_target_collectors(
     return artifacts
 
 
-def target_iran(limit: int = 50, db_url: str | None = None) -> list["Artifact"]:
+def target_iran(
+    limit: int = 50,
+    db_url: str | None = None,
+    diagnostics: list[str] | None = None,
+) -> list["Artifact"]:
     """Target Iranian military only. Returns Artifacts from public sources.
     Toggle via CLI: ingress ingest target --iran
     """
     config = get_iran_config()
-    return _run_target_collectors(config, limit=limit, db_url=db_url)
+    return _run_target_collectors(config, limit=limit, db_url=db_url, diagnostics=diagnostics)
 
 
-def target_russia(limit: int = 50, db_url: str | None = None) -> list["Artifact"]:
+def target_russia(
+    limit: int = 50,
+    db_url: str | None = None,
+    diagnostics: list[str] | None = None,
+) -> list["Artifact"]:
     """Target Russian military only. Returns Artifacts from public sources.
     Toggle via CLI: ingress ingest target --russia
     """
     config = get_russia_config()
-    return _run_target_collectors(config, limit=limit, db_url=db_url)
+    return _run_target_collectors(config, limit=limit, db_url=db_url, diagnostics=diagnostics)
 
 
-def target_china(limit: int = 50, db_url: str | None = None) -> list["Artifact"]:
+def target_china(
+    limit: int = 50,
+    db_url: str | None = None,
+    diagnostics: list[str] | None = None,
+) -> list["Artifact"]:
     """Target Chinese PLA only. Returns Artifacts from public sources.
     Toggle via CLI: ingress ingest target --china
     """
     config = get_china_config()
-    return _run_target_collectors(config, limit=limit, db_url=db_url)
+    return _run_target_collectors(config, limit=limit, db_url=db_url, diagnostics=diagnostics)
 
 
-def target_multiple(countries: list[str], limit: int = 50, db_url: str | None = None) -> list["Artifact"]:
+def target_multiple(
+    countries: list[str],
+    limit: int = 50,
+    db_url: str | None = None,
+    diagnostics: list[str] | None = None,
+) -> list["Artifact"]:
     """Toggleable multi-target. E.g. countries=['iran', 'russia'].
     All data from public sources.
     """
     config = get_target_config(countries)
-    return _run_target_collectors(config, limit=limit, db_url=db_url)
+    return _run_target_collectors(config, limit=limit, db_url=db_url, diagnostics=diagnostics)
 
 
-_TARGET_STATE = Path.home() / ".local" / "share" / "ingress" / "current_target.json"
+_TARGET_STATE = target_state_file
 
 
-def set_current_target(countries: list[str]) -> None:
-    """Persist the current target focus (e.g. ['iran'])."""
-    _TARGET_STATE.parent.mkdir(parents=True, exist_ok=True)
-    with open(_TARGET_STATE, "w") as f:
-        json.dump({"targets": countries or []}, f)
+def _target_state_path() -> "Path":
+    return _TARGET_STATE() if callable(_TARGET_STATE) else _TARGET_STATE
+
+
+def set_current_target(countries: list[str]) -> bool:
+    """Persist the current target focus. Returns False when state is not writable."""
+    state_path = _target_state_path()
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        with state_path.open("w") as f:
+            json.dump({"targets": countries or []}, f)
+        return True
+    except OSError:
+        return False
+
 
 def get_current_target() -> list[str]:
     """Return the last set target(s), e.g. ['iran'] or [] if none."""
-    if not _TARGET_STATE.exists():
+    state_path = _target_state_path()
+    if not state_path.exists():
         return []
     try:
-        with open(_TARGET_STATE) as f:
+        with state_path.open() as f:
             data = json.load(f)
         targets = data.get("targets", [])
         if isinstance(targets, list):

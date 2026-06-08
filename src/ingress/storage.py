@@ -190,6 +190,20 @@ def get_recent_artifacts(limit: int = 30, db_url: str | None = None) -> list[dic
         conn.close()
 
 
+def get_counts(db_url: str | None = None) -> dict[str, int]:
+    """Return basic storage counts for status/doctor commands."""
+    conn = _get_conn(db_url)
+    try:
+        cur = conn.cursor()
+        counts: dict[str, int] = {}
+        for table in ("artifacts", "provenance", "sightings", "sighting_artifacts"):
+            cur.execute(f"SELECT COUNT(*) FROM {table}")
+            counts[table] = int(cur.fetchone()[0])
+        return counts
+    finally:
+        conn.close()
+
+
 def get_sightings(limit: int = 1000, db_url: str | None = None) -> list[dict[str, Any]]:
     """Return sightings joined with artifacts for export."""
     conn = _get_conn(db_url)

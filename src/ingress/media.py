@@ -11,6 +11,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -239,7 +240,7 @@ def make_artifact_from_analysis(
         source_id=src.id,
         source_type=src.source_type,
         url_or_id=source_url or str(analysis.get("path")),
-        fetched_at=__import__("datetime").datetime.utcnow(),
+        fetched_at=datetime.now(timezone.utc),
         collector="media-analyzer",
         collector_version="0.1.0",
         tos_compliant=True,

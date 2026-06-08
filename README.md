@@ -15,6 +15,7 @@ Status: alpha, but the core CLI, SQLite storage, RSS ingest, credentialed Telegr
 - Target presets for Iran, Russia, and China that combine public RSS/Telegram source lists and military keyword filters.
 - Media analysis for local files or URLs with EXIF, optional perceptual image hash, optional ffprobe video metadata, SHA-256 identity, entity hints, and optional storage.
 - SQLite-backed artifacts, provenance, sightings, case notes, delta listing, and GeoJSON export.
+- `ingress doctor`, `ingress status`, and `ingress ingest sample` for local verification without network access.
 - FastAPI skeleton exposing `/health`, `/artifacts`, `/sightings`, and an explicit operator-driven `/ingest` placeholder.
 - Ruff, mypy, and pytest coverage for the current core behavior.
 
@@ -43,6 +44,20 @@ Create the local SQLite schema:
 
 ```bash
 ingress db init --db-url sqlite:///./data/ingress.db
+```
+
+Check local runtime health:
+
+```bash
+ingress doctor --db-url sqlite:///./data/ingress.db
+ingress status --db-url sqlite:///./data/ingress.db
+```
+
+Populate deterministic synthetic records for a local smoke run:
+
+```bash
+ingress ingest sample --db-url sqlite:///./data/ingress.db
+ingress status --db-url sqlite:///./data/ingress.db
 ```
 
 Run the demo TUI:
@@ -86,6 +101,7 @@ Analyze media:
 ```bash
 ingress analyze /path/to/photo.jpg --store --db-url sqlite:///./data/ingress.db
 ingress analyze https://example.com/strike.mp4 --store --db-url sqlite:///./data/ingress.db
+ingress analyze /path/to/photo.jpg --show-json
 ```
 
 Optional system tools improve media analysis:

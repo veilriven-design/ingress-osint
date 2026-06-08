@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import json
 import random
+import shutil
+import sys
 import threading
 import time
 from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
@@ -483,10 +484,16 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
                 "status": "analyst_reviewed",
                 "entities": meta.get("geoparsed_places", []) or meta.get("entities", []),
                 "provenance": f"db:{str(a.get('content_hash', 'n/a'))[:8]}",
-                "target": (current_targets[0] if current_targets else None),
+                "target": meta.get("target") or meta.get("target_country"),
             }
             if SIGNAL_QUEUE is not None:
                 SIGNAL_QUEUE.put(sig)
+        if not artifacts:
+            console.print(
+                "[yellow]No stored artifacts found.[/] "
+                "Run [bold]ingress ingest sample --db-url "
+                f"{db}[/] for a local smoke dataset, or ingest an RSS feed."
+            )
     except Exception as exc:
         if current_targets:
             mil_str = ", ".join(t.title() for t in current_targets)
@@ -499,18 +506,10 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
                 if SIGNAL_QUEUE is not None:
                     SIGNAL_QUEUE.put(s)
 
-    if current_targets:
-        if len(current_targets) == 1:
-            mil = current_targets[0].title()
-            main_title = f"INGRESS  •  {mil} Military"
-        else:
-            mils = " / ".join(t.title() for t in current_targets)
-            main_title = f"INGRESS  •  {mils} Militaries"
-    else:
-        main_title = "INGRESS  •  Military Signals"
+    main_title = "INGRESS  •  Stored Signals"
     if current_targets:
         mil_str = ", ".join(t.title() for t in current_targets)
-        second_line = f"Targeted to {mil_str}. Pulls from storage."
+        second_line = f"Saved focus: {mil_str}. Showing all stored artifacts."
     else:
         second_line = "Pulls from storage. Use 'ingest target' or 'rss' to populate."
     console.print(Panel.fit(
@@ -578,7 +577,8 @@ def watch(
         targets.append("china")
     if targets:
         from .targeting import set_current_target
-        set_current_target(targets)
+        if not set_current_target(targets):
+            console.print("[yellow]Could not persist target focus; continuing for this run only.[/]")
     run_watch(db_url=db_url, run_seconds=run_seconds)
 
 
@@ -586,6 +586,96 @@ def watch(
 def version() -> None:
     """Print version."""
     typer.echo(f"ingress {__version__}")
+
+
+@app.command()
+def status(
+    db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL"),
+    limit: int = typer.Option(5, "--limit", help="Recent artifacts to show."),
+) -> None:
+    """Show local storage and target status."""
+    from .config import get_db_url
+    from .storage import ensure_schema, get_counts, get_recent_artifacts
+    from .targeting import get_current_target
+
+    effective_db = db_url or get_db_url()
+    ensure_schema(effective_db)
+    counts = get_counts(effective_db)
+    targets = get_current_target()
+
+    console.print(Panel.fit(
+        f"[bold]Database:[/] {effective_db}\n"
+        f"[bold]Artifacts:[/] {counts['artifacts']}\n"
+        f"[bold]Provenance rows:[/] {counts['provenance']}\n"
+        f"[bold]Sightings:[/] {counts['sightings']}\n"
+        f"[bold]Target focus:[/] {', '.join(targets) if targets else 'none'}",
+        title="Ingress Status",
+        border_style="cyan",
+    ))
+
+    recent = get_recent_artifacts(limit, effective_db)
+    if not recent:
+        console.print("[yellow]No artifacts yet.[/] Try: ingress ingest sample --db-url " + effective_db)
+        return
+
+    table = Table(title="Recent Artifacts", box=box.SIMPLE)
+    table.add_column("Fetched")
+    table.add_column("Source")
+    table.add_column("Text")
+    for row in recent:
+        table.add_row(
+            str(row.get("fetched_at", ""))[:19],
+            str(row.get("source_name") or row.get("source_id") or "?")[:28],
+            (row.get("text") or "")[:80],
+        )
+    console.print(table)
+
+
+@app.command()
+def doctor(
+    db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL"),
+) -> None:
+    """Check local Ingress runtime health."""
+    import importlib.util
+
+    from .config import get_db_url
+    from .state import get_state_dir, state_dir_writable
+    from .storage import ensure_schema, get_counts
+
+    effective_db = db_url or get_db_url()
+    checks: list[tuple[str, bool, str]] = []
+
+    checks.append(("Python", sys.version_info >= (3, 10), sys.version.split()[0]))
+    checks.append(("rich", HAS_RICH, "installed" if HAS_RICH else "missing"))
+    checks.append(("feedparser", importlib.util.find_spec("feedparser") is not None, "RSS ingest"))
+    checks.append(("telethon", importlib.util.find_spec("telethon") is not None, "Telegram ingest"))
+    checks.append(("Pillow", importlib.util.find_spec("PIL") is not None, "media images"))
+    checks.append(("imagehash", importlib.util.find_spec("imagehash") is not None, "perceptual hashing"))
+    checks.append(("fastapi", importlib.util.find_spec("fastapi") is not None, "API"))
+    checks.append(("exiftool", shutil.which("exiftool") is not None, shutil.which("exiftool") or "missing"))
+    checks.append(("ffprobe", shutil.which("ffprobe") is not None, shutil.which("ffprobe") or "missing"))
+    checks.append(("state dir", state_dir_writable(), str(get_state_dir())))
+
+    try:
+        ensure_schema(effective_db)
+        counts = get_counts(effective_db)
+        db_detail = f"{effective_db} ({counts['artifacts']} artifacts, {counts['sightings']} sightings)"
+        checks.append(("SQLite DB", True, db_detail))
+    except Exception as exc:
+        checks.append(("SQLite DB", False, str(exc)))
+
+    table = Table(title="Ingress Doctor", box=box.SIMPLE)
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Detail")
+    for name, ok, detail in checks:
+        table.add_row(name, "[green]ok[/]" if ok else "[red]problem[/]", detail)
+    console.print(table)
+
+    if all(ok for _, ok, _ in checks):
+        console.print("[green]Ingress local runtime looks healthy.[/]")
+    else:
+        console.print("[yellow]Ingress can still run with reduced functionality where optional checks are missing.[/]")
 
 
 # --------------------------- Ingest (PR2) ---------------------------
@@ -629,6 +719,8 @@ def ingest_rss(
 
     if not artifacts:
         console.print("[yellow]No entries found (or all older than 'since').[/]")
+        for diag in collector.diagnostics[:5]:
+            console.print(f"[dim]  - {diag}[/]")
         return
 
     console.print(f"Parsed {len(artifacts)} candidate entries from feed.")
@@ -796,17 +888,55 @@ def ingest_target(
         console.print(f"[dim]  Sample keywords: {', '.join(kws[:5])} ...[/]")
 
     from .targeting import set_current_target, target_multiple
-    set_current_target(targets)  # so watch adapts automatically
+    if not set_current_target(targets):
+        console.print("[yellow]Could not persist target focus; continuing without saving it.[/]")
 
-    arts = target_multiple(targets, limit=limit or 50, db_url=db_url)
+    diagnostics: list[str] = []
+    arts = target_multiple(targets, limit=limit or 50, db_url=db_url, diagnostics=diagnostics)
 
     console.print(f"[green]  Collected {len(arts)} artifacts from targeted public sources.[/]")
+    if diagnostics:
+        console.print("[yellow]  RSS diagnostics:[/]")
+        for diag in diagnostics[:6]:
+            console.print(f"[dim]    - {diag}[/]")
+        if len(diagnostics) > 6:
+            console.print(f"[dim]    ... and {len(diagnostics) - 6} more[/]")
     if db_url:
         console.print("[dim]  Stored to DB (deduped).[/]")
     else:
         console.print("[dim]  (Run with --db-url to persist for watch/delta/export.)[/]")
+    if not arts:
+        console.print("[yellow]  No artifacts matched. Check network access, feed health, and keyword filters.[/]")
+        console.print("[dim]  For a local smoke run: ingress ingest sample --db-url sqlite:///./data/ingress.db[/]")
 
     console.print("[green]Target complete. Use target_iran(), target_russia(), target_china() or the CLI flags.[/]")
+
+
+@ingest_app.command("sample")
+def ingest_sample(
+    db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL"),
+) -> None:
+    """Insert deterministic synthetic sample records for local verification."""
+    from .config import get_db_url
+    from .sample_data import make_sample_records
+    from .storage import ensure_schema, insert_artifact, insert_sighting
+
+    effective_db = db_url or get_db_url()
+    ensure_schema(effective_db)
+
+    artifacts_inserted = 0
+    sightings_inserted = 0
+    for artifact, sighting in make_sample_records():
+        if insert_artifact(artifact, effective_db):
+            artifacts_inserted += 1
+        if insert_sighting(sighting, effective_db):
+            sightings_inserted += 1
+
+    console.print(
+        "[green]Sample data ready.[/] "
+        f"Inserted {artifacts_inserted} artifacts and {sightings_inserted} sightings."
+    )
+    console.print(f"[dim]Next: ingress watch --db-url {effective_db}[/]")
 
 
 @ingest_app.command("x")
@@ -946,13 +1076,14 @@ def db_command(
 
 # --------------------------- Basic Cases (PR7) ---------------------------
 
-CASES_FILE = Path.home() / ".local" / "share" / "ingress" / "cases.json"
-
 def _load_cases() -> dict[str, dict[str, Any]]:
-    CASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if CASES_FILE.exists():
+    from .state import cases_file
+
+    path = cases_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
         try:
-            data = json.loads(CASES_FILE.read_text())
+            data = json.loads(path.read_text())
             return data if isinstance(data, dict) else {}
         except Exception:
             pass
@@ -960,8 +1091,11 @@ def _load_cases() -> dict[str, dict[str, Any]]:
 
 
 def _save_cases(cases: dict[str, dict[str, Any]]) -> None:
-    CASES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CASES_FILE.write_text(json.dumps(cases, indent=2))
+    from .state import cases_file
+
+    path = cases_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cases, indent=2))
 
 @app.command("case")
 def case_cmd(
@@ -1036,6 +1170,7 @@ def analyze(
     download: bool = typer.Option(
         True, "--download/--no-download", help="For URLs: download to temp for analysis."
     ),
+    show_json: bool = typer.Option(False, "--show-json", help="Print full analysis JSON."),
 ) -> None:
     """
     Analyze an image or video for OSINT purposes.
@@ -1117,8 +1252,7 @@ def analyze(
         except Exception as e:
             console.print(f"[red]Failed to store:[/] {e}")
 
-    # Full raw for power users
-    if typer.confirm("Show full analysis JSON?", default=False):
+    if show_json:
         console.print_json(json.dumps(analysis, default=str, indent=2))
 
     # PR5: basic geoenrichment
