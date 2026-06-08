@@ -255,3 +255,27 @@ def target_multiple(countries: List[str], limit: int = 50, db_url: Optional[str]
     """
     config = get_target_config(countries)
     return _run_target_collectors(config, limit=limit, db_url=db_url)
+
+
+# --- Current target persistence (so `watch` adapts to last `ingest target`) ---
+import json
+from pathlib import Path
+
+_TARGET_STATE = Path.home() / ".local" / "share" / "ingress" / "current_target.json"
+
+def set_current_target(countries: List[str]) -> None:
+    """Persist the current target focus (e.g. ['iran'])."""
+    _TARGET_STATE.parent.mkdir(parents=True, exist_ok=True)
+    with open(_TARGET_STATE, "w") as f:
+        json.dump({"targets": countries or []}, f)
+
+def get_current_target() -> List[str]:
+    """Return the last set target(s), e.g. ['iran'] or [] if none."""
+    if not _TARGET_STATE.exists():
+        return []
+    try:
+        with open(_TARGET_STATE) as f:
+            data = json.load(f)
+        return data.get("targets", [])
+    except Exception:
+        return []

@@ -54,7 +54,7 @@ console = Console()
 
 # --------------------------- Canned Data & State ---------------------------
 
-CANNED_SIGNALS: list[dict[str, Any]] = [
+SIMULATED_SIGNALS: list[dict[str, Any]] = [
     {
         "ts": time.time() - 35,
         "source": "t.me/oryxspioenkop",
@@ -64,6 +64,7 @@ CANNED_SIGNALS: list[dict[str, Any]] = [
         "status": "visually_confirmed",
         "entities": ["T-72B3", "BMP-2", "Pokrovsk"],
         "provenance": "Oryx-style list + Telegram post + 2 videos",
+        "target": "russia",
     },
     {
         "ts": time.time() - 82,
@@ -74,6 +75,7 @@ CANNED_SIGNALS: list[dict[str, Any]] = [
         "status": "unverified",
         "entities": ["UAV", "Belgorod"],
         "provenance": "Official MoD RSS feed",
+        "target": "russia",
     },
     {
         "ts": time.time() - 41,
@@ -84,6 +86,7 @@ CANNED_SIGNALS: list[dict[str, Any]] = [
         "status": "analyst_reviewed",
         "entities": ["IL-76MD"],
         "provenance": "ADSB Exchange public feed + callsign correlation",
+        "target": "iran",
     },
     {
         "ts": time.time() - 19,
@@ -104,6 +107,7 @@ CANNED_SIGNALS: list[dict[str, Any]] = [
         "status": "unverified",
         "entities": ["logistics node"],
         "provenance": "Copernicus Sentinel-2 L2A, 10m, acquired 2026-06-06",
+        "target": "china",
     },
 ]
 
@@ -219,7 +223,8 @@ def build_recent_table() -> Table:
     )
     t.add_column("Time", style="dim", width=8)
     t.add_column("Source", style="cyan", width=22)
-    t.add_column("Signal (first 68 chars)", style="white", width=70)
+    t.add_column("Signal (first 120 chars)", style="white", width=90)
+    t.add_column("Focus", width=10)
     t.add_column("Conf", width=5)
     t.add_column("Status", width=16)
 
@@ -228,7 +233,7 @@ def build_recent_table() -> Table:
 
     for s in items:
         t_str = datetime.fromtimestamp(s["ts"]).strftime("%H:%M:%S")
-        short = s["text"][:68] + ("…" if len(s["text"]) > 68 else "")
+        short = s["text"][:120] + ("…" if len(s["text"]) > 120 else "")
         conf_str = f"{s['confidence']:.0%}"
         status_style = {
             "visually_confirmed": "green",
@@ -236,10 +241,12 @@ def build_recent_table() -> Table:
             "analyst_reviewed": "yellow",
             "unverified": "red",
         }.get(s["status"], "white")
+        focus = (s.get("target") or "").title()[:8] or "-"
         t.add_row(
             t_str,
             s["source"][:22],
             short,
+            focus,
             conf_str,
             Text(s["status"], style=status_style),
         )
@@ -335,7 +342,7 @@ def render_dashboard() -> Layout:
 
 
 def run_canned(run_seconds: float = 0) -> None:
-    """Run the TUI with canned signals (no external services required)."""
+    """Run the TUI with simulated signals from public military sources (no external services required)."""
     if not HAS_RICH:
         print("FATAL: rich is required for the Ingress TUI.")
         print("Requires Python >= 3.10. Install with: python3 -m pip install -e '.[full]'")
@@ -352,17 +359,44 @@ def run_canned(run_seconds: float = 0) -> None:
     spark_buckets = deque([0] * SPARK_HISTORY, maxlen=SPARK_HISTORY)
     start_time = time.time()
 
-    # Seed a few initial signals so the UI isn't empty
-    for s in CANNED_SIGNALS:
-        SIGNAL_QUEUE.put(s)
+    current_targets = []
+    try:
+        from .targeting import get_current_target
+        current_targets = get_current_target()
+    except Exception:
+        pass
 
+    # Seed a few initial signals so the UI isn't empty (filter by current target if set)
+    for s in SIMULATED_SIGNALS:
+        if not current_targets or s.get("target") in current_targets or not s.get("target"):
+            SIGNAL_QUEUE.put(s)
+
+    if current_targets:
+        if len(current_targets) == 1:
+            mil = current_targets[0].title()
+            main_title = f"INGRESS  •  {mil} Military"
+        else:
+            mils = " / ".join(t.title() for t in current_targets)
+            main_title = f"INGRESS  •  {mils} Militaries"
+    else:
+        main_title = "INGRESS  •  Military Signals"
+    if current_targets:
+        mil_str = ", ".join(t.title() for t in current_targets)
+        second_line = f"Targeted to {mil_str}. Live view of signals."
+    else:
+        second_line = "Live view of signals entering the open domain.\nFull provenance, confidence, and verification status shown for every item."
     console.print(Panel.fit(
-        "[bold red]INGRESS[/]  •  Military OSINT\n"
-        "[dim]Live view of signals entering the open domain.\n"
-        "Full provenance, confidence, and verification status shown for every item.[/]",
+        f"[bold red]{main_title}[/]\n"
+        f"[dim]{second_line}[/]",
         border_style="red",
     ))
-    console.print("[yellow]Using configured public sources for the Iranian, Chinese and Russian militaries.[/]")
+    if current_targets:
+        mil_str = ", ".join(t.title() for t in current_targets)
+        msg = f"Using configured public sources for {mil_str}."
+    else:
+        msg = "Using configured public sources for the Iranian, Chinese and Russian militaries."
+    console.print(f"[yellow]{msg}[/]")
+    console.print("[dim]Legend: ▁▂▃▅█ = activity sparkline (recent signal rate over time)  •  █░░░░ = confidence bar  •  sources = top by count  •  entities = key mentioned[/]")
     console.print("[dim]Press 'q' or Ctrl-C to exit. See --help for other options.[/]\n")
 
     t_feeder = threading.Thread(target=feeder, args=(STOP_EVENT, SIGNAL_QUEUE), daemon=True)
@@ -417,6 +451,13 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
     start_time = time.time()
 
     db = db_url or get_db_url()
+    current_targets = []
+    try:
+        from .targeting import get_current_target
+        current_targets = get_current_target()
+    except Exception:
+        pass
+
     try:
         ensure_schema(db)
         artifacts = get_recent_artifacts(30, db)
@@ -435,23 +476,45 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
                 "ts": ts,
                 "source": a.get("source_name", a.get("source_id", "?")),
                 "type": str(a.get("content_type", "text")).upper(),
-                "text": (a.get("text") or "")[:120],
+                "text": (a.get("text") or "")[:180],
                 "confidence": round(0.7 + (hash(str(a.get("id", ""))) % 20) / 100.0, 2),
                 "status": "analyst_reviewed",
                 "entities": meta.get("geoparsed_places", []) or meta.get("entities", []),
                 "provenance": f"db:{str(a.get('content_hash', 'n/a'))[:8]}",
+                "target": (current_targets[0] if current_targets else None),
             }
             SIGNAL_QUEUE.put(sig)
     except Exception as e:
-        console.print(f"[yellow]Could not load data from DB ({e}). Using public sources for the target militaries.[/]")
-        for s in CANNED_SIGNALS:
-            SIGNAL_QUEUE.put(s)
+        if current_targets:
+            mil_str = ", ".join(t.title() for t in current_targets)
+            msg = f"Using public sources for {mil_str}."
+        else:
+            msg = "Using public sources for the target militaries."
+        console.print(f"[yellow]Could not load data from DB. {msg}[/]")
+        for s in SIMULATED_SIGNALS:
+            if not current_targets or s.get("target") in current_targets or not s.get("target"):
+                SIGNAL_QUEUE.put(s)
 
+    if current_targets:
+        if len(current_targets) == 1:
+            mil = current_targets[0].title()
+            main_title = f"INGRESS  •  {mil} Military"
+        else:
+            mils = " / ".join(t.title() for t in current_targets)
+            main_title = f"INGRESS  •  {mils} Militaries"
+    else:
+        main_title = "INGRESS  •  Military Signals"
+    if current_targets:
+        mil_str = ", ".join(t.title() for t in current_targets)
+        second_line = f"Targeted to {mil_str}. Pulls from storage."
+    else:
+        second_line = "Pulls from storage. Use 'ingest target' or 'rss' to populate."
     console.print(Panel.fit(
-        "[bold red]INGRESS[/]  •  Live view of military signals (Iran / China / Russia)\n"
-        "[dim]Pulls from storage. Use ingest target or rss to populate.[/]",
+        f"[bold red]{main_title}[/]\n"
+        f"[dim]{second_line}[/]",
         border_style="red",
     ))
+    console.print("[dim]Legend: ▁▂▃▅█ = activity sparkline (recent signal rate over time)  •  █░░░░ = confidence bar  •  sources = top by count  •  entities = key mentioned[/]")
     console.print("[dim]Press 'q' or Ctrl-C to exit. This is a functional TUI.[/]\n")
 
     t_feeder = threading.Thread(target=feeder, args=(STOP_EVENT, SIGNAL_QUEUE), daemon=True)
@@ -494,10 +557,24 @@ def demo(
 
 @app.command()
 def watch(
+    iran: bool = typer.Option(False, "--iran", help="Focus on Iranian military (public sources: Tasnim, Fars, IRGC-related OSINT)"),
+    russia: bool = typer.Option(False, "--russia", help="Focus on Russian military (Rybar, Oryx, MoD claims)"),
+    china: bool = typer.Option(False, "--china", help="Focus on Chinese PLA (PLA Daily, Global Times, theater commands)"),
     db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL", help="DB to watch (defaults to configured)"),
     run_seconds: float = typer.Option(0, "--run-seconds"),
 ) -> None:
     """Live TUI watching data from storage (integrated)."""
+    # Normalize and set focus if provided (for this run; persists if set)
+    iran = iran if isinstance(iran, bool) else False
+    russia = russia if isinstance(russia, bool) else False
+    china = china if isinstance(china, bool) else False
+    targets = []
+    if iran: targets.append("iran")
+    if russia: targets.append("russia")
+    if china: targets.append("china")
+    if targets:
+        from .targeting import set_current_target
+        set_current_target(targets)
     run_watch(db_url=db_url, run_seconds=run_seconds)
 
 
@@ -702,14 +779,32 @@ def ingest_target(
     if hasattr(db_url, "default"): db_url = db_url.default
 
     config = get_target_config(targets)
-    console.print(f"[cyan]Targeting {targets}[/]")
 
-    # Use the high-level targeting functions (separate per country, toggleable)
-    from .targeting import target_multiple
+    # Verbose output: show what we're actually targeting
+    console.print(f"[cyan]Targeting {targets} — Iranian / Chinese / Russian military focus[/]")
+    feeds = config.get("rss_feeds", [])
+    chans = config.get("telegram_channels", [])
+    kws = config.get("keywords", [])
+    console.print(f"[dim]  RSS feeds: {len(feeds)}  |  Telegram channels: {len(chans)}  |  Keywords: {len(kws)}[/]")
+    if feeds:
+        console.print(f"[dim]  Feeds: {', '.join(feeds[:2])}{' ...' if len(feeds)>2 else ''}[/]")
+    if chans:
+        console.print(f"[dim]  Channels: {', '.join(chans[:2])}{' ...' if len(chans)>2 else ''}[/]")
+    if kws:
+        console.print(f"[dim]  Sample keywords: {', '.join(kws[:5])} ...[/]")
+
+    from .targeting import set_current_target, target_multiple
+    set_current_target(targets)  # so watch adapts automatically
+
     arts = target_multiple(targets, limit=limit, db_url=db_url)
-    console.print(f"  Total artifacts from target(s): {len(arts)} (via public sources)")
 
-    console.print("[green]Target complete. All data from public sources. Separate functions: target_iran(), target_russia(), target_china().[/]")
+    console.print(f"[green]  Collected {len(arts)} artifacts from targeted public sources.[/]")
+    if db_url:
+        console.print(f"[dim]  Stored to DB (deduped).[/]")
+    else:
+        console.print("[dim]  (Run with --db-url to persist for watch/delta/export.)[/]")
+
+    console.print("[green]Target complete. Use target_iran(), target_russia(), target_china() or the CLI flags.[/]")
 
 
 @ingest_app.command("x")

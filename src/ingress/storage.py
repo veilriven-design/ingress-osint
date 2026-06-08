@@ -86,6 +86,23 @@ def ensure_schema(db_url: Optional[str] = None) -> None:
             );
         """)
         conn.commit()
+
+        # Migrate schema for older DBs (add missing columns)
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(artifacts)")
+        cols = [row[1] for row in cur.fetchall()]
+        if "source_name" not in cols:
+            try:
+                cur.execute("ALTER TABLE artifacts ADD COLUMN source_name TEXT")
+                conn.commit()
+            except Exception:
+                pass
+        if "media_path" not in cols:
+            try:
+                cur.execute("ALTER TABLE artifacts ADD COLUMN media_path TEXT")
+                conn.commit()
+            except Exception:
+                pass
     finally:
         conn.close()
 
