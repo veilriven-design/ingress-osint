@@ -2,15 +2,14 @@
 Configuration for Ingress (db url, etc.).
 """
 
-from pydantic_settings import BaseSettings
 from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    db_url: str = Field(default="sqlite:///./data/ingress.db", alias="INGRESS_DB_URL")
+    model_config = SettingsConfigDict(env_prefix="INGRESS_")
 
-    class Config:
-        env_prefix = "INGRESS_"
+    db_url: str = Field(default="sqlite:///./data/ingress.db", alias="INGRESS_DB_URL")
 
 
 settings = Settings()

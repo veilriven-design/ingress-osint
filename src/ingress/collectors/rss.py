@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from typing import Any, List
 
-import feedparser
+try:
+    import feedparser  # type: ignore[import-untyped]
+except ImportError:  # pragma: no cover - exercised by minimal installs
+    feedparser = None  # type: ignore[assignment]
 
 from ..models import Artifact, ProvenanceEntry, Source, SourceType
 
@@ -32,13 +34,13 @@ class RSSCollector:
 
     def __init__(
         self,
-        feed_url: str | List[str],
+        feed_url: str | list[str],
         *,
         source_id: str | None = None,
         name: str | None = None,
         credibility_prior: float = 0.65,
-        tos_summary: str | None = "Public RSS/Atom feed. Respect publisher terms.",
-        keywords: List[str] | None = None,
+        tos_summary: str = "Public RSS/Atom feed. Respect publisher terms.",
+        keywords: list[str] | None = None,
     ) -> None:
         self.feed_urls = [feed_url] if isinstance(feed_url, str) else feed_url
         self.source_id = source_id or "multi-rss"
@@ -71,6 +73,9 @@ class RSSCollector:
         since: optional datetime to skip older entries (best-effort).
         limit: stop after this many matching items (for speed on large feeds).
         """
+        if feedparser is None:
+            raise RuntimeError("RSS ingest requires feedparser. Install with: pip install -e '.[full]'")
+
         source = self._make_source()
         artifacts: list[Artifact] = []
 
@@ -88,7 +93,16 @@ class RSSCollector:
 
                 if published:
                     try:
-                        ts = datetime(*published[:6], tzinfo=timezone.utc)
+                        parts = list(published[:6])
+                        ts = datetime(
+                            int(parts[0]),
+                            int(parts[1]),
+                            int(parts[2]),
+                            int(parts[3]),
+                            int(parts[4]),
+                            int(parts[5]),
+                            tzinfo=timezone.utc,
+                        )
                     except Exception:
                         ts = datetime.now(timezone.utc)
                 else:

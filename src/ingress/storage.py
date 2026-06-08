@@ -1,24 +1,28 @@
-"""
-Storage layer for Ingress (SQLite focused for the installer).
-
-Provides ensure_schema, insert_artifact (with dedup), get_recent_artifacts, get_sightings.
-For full Postgres + PostGIS use the implementation or alembic.
-"""
-
-import sqlite3
 import json
-from datetime import datetime
-from typing import Any, Optional, List, Dict
+import sqlite3
+from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from .config import get_db_url
 from .models import Artifact, Sighting
 
 
-def _get_conn(db_url: Optional[str] = None):
-    if hasattr(db_url, 'default'):
-        db_url = db_url.default
+def _coerce_db_url(db_url: str | None = None) -> str:
     url = db_url or get_db_url()
+    if not isinstance(url, str):
+        raise TypeError(f"Database URL must be a string, got {type(url).__name__}")
+    return url
+
+
+def _enum_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
+def _get_conn(db_url: str | None = None) -> sqlite3.Connection:
+    url = _coerce_db_url(db_url)
     if url.startswith("sqlite:///"):
         path = url.replace("sqlite:///", "", 1)
         if path == ":memory:":
@@ -29,12 +33,13 @@ def _get_conn(db_url: Optional[str] = None):
             conn = sqlite3.connect(str(p))
         conn.row_factory = sqlite3.Row
         return conn
-    else:
-        raise NotImplementedError("Only sqlite:// urls are supported in this layer. "
-                                  "Install with [storage] extra and use Postgres for full support.")
+    raise NotImplementedError(
+        "Only sqlite:// URLs are supported by the current storage layer. "
+        "Postgres/PostGIS is planned but not implemented in this build."
+    )
 
 
-def ensure_schema(db_url: Optional[str] = None) -> None:
+def ensure_schema(db_url: str | None = None) -> None:
     conn = _get_conn(db_url)
     try:
         conn.executescript("""
@@ -71,6 +76,7 @@ def ensure_schema(db_url: Optional[str] = None) -> None:
                 lat REAL,
                 lon REAL,
                 location_name TEXT,
+                entities TEXT,
                 description TEXT,
                 confidence REAL,
                 confidence_level TEXT,
@@ -103,11 +109,20 @@ def ensure_schema(db_url: Optional[str] = None) -> None:
                 conn.commit()
             except Exception:
                 pass
+
+        cur.execute("PRAGMA table_info(sightings)")
+        sighting_cols = [row[1] for row in cur.fetchall()]
+        if "entities" not in sighting_cols:
+            try:
+                cur.execute("ALTER TABLE sightings ADD COLUMN entities TEXT")
+                conn.commit()
+            except Exception:
+                pass
     finally:
         conn.close()
 
 
-def insert_artifact(artifact: Artifact, db_url: Optional[str] = None) -> bool:
+def insert_artifact(artifact: Artifact, db_url: str | None = None) -> bool:
     """Insert if content_hash not seen. Returns True if inserted."""
     conn = _get_conn(db_url)
     try:
@@ -124,7 +139,7 @@ def insert_artifact(artifact: Artifact, db_url: Optional[str] = None) -> bool:
             artifact.id,
             artifact.source.id,
             artifact.source.name,
-            str(artifact.source.source_type),
+            _enum_value(artifact.source.source_type),
             artifact.content_type,
             artifact.raw_ref,
             artifact.content_hash,
@@ -142,7 +157,7 @@ def insert_artifact(artifact: Artifact, db_url: Optional[str] = None) -> bool:
             """, (
                 artifact.id,
                 p.source_id,
-                str(p.source_type),
+                _enum_value(p.source_type),
                 p.url_or_id,
                 p.fetched_at.isoformat() if p.fetched_at else None,
                 p.collector,
@@ -157,7 +172,7 @@ def insert_artifact(artifact: Artifact, db_url: Optional[str] = None) -> bool:
         conn.close()
 
 
-def get_recent_artifacts(limit: int = 30, db_url: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_recent_artifacts(limit: int = 30, db_url: str | None = None) -> list[dict[str, Any]]:
     """Return recent artifacts as list of dicts for the TUI/watch."""
     conn = _get_conn(db_url)
     try:
@@ -175,13 +190,13 @@ def get_recent_artifacts(limit: int = 30, db_url: Optional[str] = None) -> List[
         conn.close()
 
 
-def get_sightings(limit: int = 1000, db_url: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_sightings(limit: int = 1000, db_url: str | None = None) -> list[dict[str, Any]]:
     """Return sightings joined with artifacts for export."""
     conn = _get_conn(db_url)
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT s.id, s.timestamp, s.lat, s.lon, s.location_name, s.description,
+            SELECT s.id, s.timestamp, s.lat, s.lon, s.location_name, s.entities, s.description,
                    s.confidence, s.confidence_level, s.verification_status, s.metadata,
                    GROUP_CONCAT(sa.artifact_id) as artifact_ids
             FROM sightings s
@@ -200,17 +215,24 @@ def get_sightings(limit: int = 1000, db_url: Optional[str] = None) -> List[Dict[
             if d.get("metadata"):
                 try:
                     d["metadata"] = json.loads(d["metadata"])
-                except:
+                except json.JSONDecodeError:
                     d["metadata"] = {}
             else:
                 d["metadata"] = {}
+            if d.get("entities"):
+                try:
+                    d["entities"] = json.loads(d["entities"])
+                except json.JSONDecodeError:
+                    d["entities"] = []
+            else:
+                d["entities"] = []
             rows.append(d)
         return rows
     finally:
         conn.close()
 
 
-def insert_sighting(sighting: Sighting, db_url: Optional[str] = None) -> bool:
+def insert_sighting(sighting: Sighting, db_url: str | None = None) -> bool:
     """Insert a sighting and link artifacts."""
     conn = _get_conn(db_url)
     try:
@@ -220,19 +242,20 @@ def insert_sighting(sighting: Sighting, db_url: Optional[str] = None) -> bool:
             return False
 
         cur.execute("""
-            INSERT INTO sightings (id, timestamp, lat, lon, location_name, description,
+            INSERT INTO sightings (id, timestamp, lat, lon, location_name, entities, description,
                                    confidence, confidence_level, verification_status, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             sighting.id,
             sighting.timestamp.isoformat(),
             sighting.lat,
             sighting.lon,
             sighting.location_name,
+            json.dumps(sighting.entities),
             sighting.description,
             sighting.confidence,
-            sighting.confidence_level.value if hasattr(sighting.confidence_level, 'value') else str(sighting.confidence_level),
-            sighting.verification_status.value if hasattr(sighting.verification_status, 'value') else str(sighting.verification_status),
+            _enum_value(sighting.confidence_level),
+            _enum_value(sighting.verification_status),
             json.dumps(sighting.metadata) if sighting.metadata else "{}",
         ))
 

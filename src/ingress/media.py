@@ -12,10 +12,10 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-import httpx
-from PIL import Image
+if TYPE_CHECKING:
+    from .models import Artifact
 
 
 def _tool_available(name: str) -> bool:
@@ -23,6 +23,11 @@ def _tool_available(name: str) -> bool:
 
 
 def download_to_temp(url: str, suffix: Optional[str] = None) -> tuple[Path, str]:
+    try:
+        import httpx
+    except ImportError as exc:
+        raise RuntimeError("URL media analysis requires httpx. Install with: pip install -e '.[full]'") from exc
+
     with httpx.stream("GET", url, follow_redirects=True, timeout=30) as resp:
         resp.raise_for_status()
         content_type = resp.headers.get("content-type", "application/octet-stream").split(";")[0]
@@ -50,7 +55,7 @@ def cleanup_temp(path: Path) -> None:
         pass
 
 
-def extract_exif(path: Path) -> Dict[str, Any]:
+def extract_exif(path: Path) -> dict[str, Any]:
     if not _tool_available("exiftool"):
         return {"_warning": "exiftool not found in PATH (install for full metadata)"}
     try:
@@ -63,7 +68,8 @@ def extract_exif(path: Path) -> Dict[str, Any]:
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout)
             if isinstance(data, list) and data:
-                return data[0]
+                first = data[0]
+                return first if isinstance(first, dict) else {"_warning": "exiftool returned unexpected data"}
         return {"_warning": "exiftool returned no data"}
     except Exception as e:
         return {"_error": f"exiftool failed: {e}"}
@@ -72,19 +78,19 @@ def extract_exif(path: Path) -> Dict[str, Any]:
 def compute_phash(path: Path) -> Optional[str]:
     try:
         import imagehash
+        from PIL import Image
     except Exception:
         return None
     try:
         with Image.open(path) as img:
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-            ph = imagehash.average_hash(img)
+            work_img = img.convert("RGB") if img.mode in ("RGBA", "P") else img
+            ph = imagehash.average_hash(work_img)
             return str(ph)
     except Exception:
         return None
 
 
-def get_video_info(path: Path) -> Dict[str, Any]:
+def get_video_info(path: Path) -> dict[str, Any]:
     if not _tool_available("ffprobe"):
         return {"_warning": "ffprobe (ffmpeg) not found"}
     try:
@@ -95,13 +101,14 @@ def get_video_info(path: Path) -> Dict[str, Any]:
             timeout=20,
         )
         if result.returncode == 0:
-            return json.loads(result.stdout)
+            data = json.loads(result.stdout)
+            return data if isinstance(data, dict) else {"_warning": "ffprobe returned unexpected data"}
         return {"_warning": "ffprobe returned no data"}
     except Exception as e:
         return {"_error": f"ffprobe failed: {e}"}
 
 
-def extract_basic_entities(text: Optional[str], metadata: Dict[str, Any]) -> List[str]:
+def extract_basic_entities(text: Optional[str], metadata: dict[str, Any]) -> list[str]:
     if not text and not metadata:
         return []
     keywords = {
@@ -122,7 +129,7 @@ def extract_basic_entities(text: Optional[str], metadata: Dict[str, Any]) -> Lis
     return sorted(found)
 
 
-def extract_gps_from_exif(exif: Dict[str, Any]) -> Optional[tuple[float, float]]:
+def extract_gps_from_exif(exif: dict[str, Any]) -> Optional[tuple[float, float]]:
     try:
         lat = exif.get("GPSLatitude")
         lon = exif.get("GPSLongitude")
@@ -141,12 +148,23 @@ def extract_gps_from_exif(exif: Dict[str, Any]) -> Optional[tuple[float, float]]
     return None
 
 
+def _sha256_file(path: Path) -> str | None:
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
 def analyze_media(
     path: str | Path,
     *,
     is_url: bool = False,
     download: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     p = Path(path)
     temp_path: Optional[Path] = None
     content_type = "image" if not str(p).lower().endswith((".mp4", ".mov", ".avi")) else "video"
@@ -160,10 +178,11 @@ def analyze_media(
             elif "image" in ct:
                 content_type = "image"
 
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "path": str(p),
             "content_type": content_type,
             "size_bytes": p.stat().st_size if p.exists() else None,
+            "sha256": _sha256_file(p) if p.exists() else None,
         }
 
         exif = extract_exif(p)
@@ -203,7 +222,7 @@ def analyze_media(
 
 
 def make_artifact_from_analysis(
-    analysis: Dict[str, Any],
+    analysis: dict[str, Any],
     source_url: Optional[str] = None,
 ) -> "Artifact":
     from .models import Artifact, ProvenanceEntry, Source, SourceType
@@ -226,11 +245,11 @@ def make_artifact_from_analysis(
         tos_compliant=True,
     )
 
-    content_hash = None
+    content_hash = analysis.get("sha256")
     p = Path(analysis["path"])
-    if p.exists():
+    if p.exists() and not content_hash:
         try:
-            content_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+            content_hash = _sha256_file(p)
         except Exception:
             pass
 

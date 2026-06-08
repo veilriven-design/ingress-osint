@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Ingress - Simple & Comprehensive Installer
+# Ingress - Simple Installer
 # Supports: Linux (apt/dnf/pacman), macOS (brew), basic Windows (via WSL or manual)
 # User's system (Linux with python3.11) is fully supported.
 #
@@ -11,14 +11,14 @@
 #
 # What it does:
 # - Detects OS and installs core system dependencies (python >=3.10 preferred, pip, git, etc.)
-# - Installs media tools (exiftool + ffmpeg) by enabling required repos on RPM-based systems (EPEL + RPM Fusion free+nonfree)
+# - Installs media tools (exiftool + ffmpeg) when available from configured package repositories
 # - Creates a virtual environment (prefers python3.11+ on RHEL 8 family)
-# - Installs Ingress with full features ([full] extras)
+# - Installs Ingress with the declared [full] extras
 # - Sets up initial SQLite DB
 # - Makes 'ingress' command available (via venv activation or symlink)
 # - Prints next steps and security notes
 #
-# For full power (Postgres, Telegram, etc.) see README after install.
+# For current capabilities and roadmap limits, see README after install.
 #
 # Run with: bash install.sh [--dev] [--no-system-deps]
 #
@@ -103,7 +103,7 @@ if [ "$NO_SYSTEM_DEPS" = false ]; then
   case "$PKG_MGR" in
     apt)
       sudo apt-get update -qq
-      sudo apt-get install -y -qq python3 python3-pip python3-venv git postgresql-client
+      sudo apt-get install -y -qq python3 python3-pip python3-venv git
       # Media tools (exiftool + ffmpeg) are installed for full 'ingress analyze' support.
       if ! sudo apt-get install -y -qq exiftool ffmpeg; then
         warn "Could not install exiftool and/or ffmpeg via apt. Media analysis will have reduced functionality."
@@ -111,7 +111,7 @@ if [ "$NO_SYSTEM_DEPS" = false ]; then
       ;;
     dnf)
       # Core packages first (must succeed).
-      sudo dnf install -y python3 python3-pip python3-virtualenv git postgresql || {
+      sudo dnf install -y python3 python3-pip python3-virtualenv git || {
         err "Failed to install core packages via dnf. Aborting."
         exit 1
       }
@@ -125,8 +125,7 @@ if [ "$NO_SYSTEM_DEPS" = false ]; then
           log "Using python3.11 for venv creation."
         fi
       fi
-      # Media tools: exiftool (EPEL) + full ffmpeg (RPM Fusion free + nonfree).
-      # The user has indicated that enabling free/nonfree repos is acceptable.
+      # Media tools: exiftool (often via EPEL) + ffmpeg when available.
       log "Installing media tools (exiftool + ffmpeg)..."
 
       # EPEL is required for exiftool on RHEL 8 family.
@@ -135,19 +134,9 @@ if [ "$NO_SYSTEM_DEPS" = false ]; then
         warn "Could not install exiftool even with EPEL enabled."
       fi
 
-      # Enable RPM Fusion (both free and nonfree) and install full ffmpeg.
-      # This is the reliable way to get a complete ffmpeg on EL8 (with all codecs etc.).
       if ! command -v ffmpeg >/dev/null 2>&1; then
-        log "Enabling RPM Fusion free + nonfree repositories for ffmpeg..."
-        # --nogpgcheck for the initial release RPMs to avoid interactive GPG prompts in scripts.
-        if ! sudo dnf install -y --nogpgcheck \
-          "https://download1.rpmfusion.org/free/el/rpmfusion-free-release-8.noarch.rpm" \
-          "https://download1.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-8.noarch.rpm"; then
-          warn "Failed to enable one or both RPM Fusion repositories."
-        fi
-
         if ! sudo dnf install -y ffmpeg; then
-          warn "ffmpeg installation failed after enabling RPM Fusion."
+          warn "ffmpeg installation failed from configured repositories."
         fi
       fi
 
@@ -163,7 +152,7 @@ if [ "$NO_SYSTEM_DEPS" = false ]; then
       fi
       ;;
     pacman)
-      sudo pacman -Syu --noconfirm python python-pip git postgresql
+      sudo pacman -Syu --noconfirm python python-pip git
       # Media tools for full analysis support.
       if ! sudo pacman -S --noconfirm exiftool ffmpeg; then
         warn "Could not install exiftool and/or ffmpeg. Media analysis will have reduced functionality."
@@ -178,7 +167,7 @@ if [ "$NO_SYSTEM_DEPS" = false ]; then
       fi
       ;;
     *)
-      warn "Please manually install: python3, pip, venv, git, exiftool, ffmpeg (and optionally postgresql)"
+      warn "Please manually install: python3, pip, venv, git, exiftool, ffmpeg"
       ;;
   esac
 fi
@@ -239,7 +228,7 @@ if [ ! -d "$VENV_DIR" ]; then
 fi
 
 # Activate and install from the chosen source tree (local checkout or the cloned copy)
-log "Installing Ingress (full features) from $SRC_DIR ..."
+log "Installing Ingress ([full] extras) from $SRC_DIR ..."
 source "$VENV_DIR/bin/activate"
 pip install --upgrade pip wheel setuptools -q
 (
@@ -287,19 +276,19 @@ echo "  1. Reload your shell or: source ~/.bashrc"
 echo "  2. Run: ingress --help"
 echo "  3. Try: ingress demo"
 echo "  4. Ingest: ingress ingest rss https://www.defensenews.com/arc/outboundfeeds/rss/"
-echo "  5. Watch data: ingress watch   (or modify demo to use DB)"
+echo "  5. Watch data: ingress watch --db-url sqlite:///$INSTALL_DIR/data/ingress.db"
 echo ""
-echo "For full features (Telegram, Postgres, media analysis):"
+echo "For optional features:"
 echo "  - Get Telegram API creds: https://my.telegram.org"
 if ! command -v exiftool >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
   echo "  - Media tools still missing for full 'ingress analyze' support:"
   echo "      exiftool (EXIF/metadata) and ffmpeg (video via ffprobe)"
-  echo "    The installer attempted to set them up (EPEL + RPM Fusion on RHEL 8 family)."
-  echo "    You may need to enable the repos manually and run: sudo dnf install exiftool ffmpeg"
+  echo "    The installer attempted to set them up from configured package repositories."
+  echo "    You may need to enable an appropriate media repository manually."
 else
   echo "  - exiftool + ffmpeg detected (full media analysis available)."
 fi
-echo "  - Postgres: docker compose up -d db ; alembic upgrade head"
+echo "  - Current storage backend: SQLite. Postgres/PostGIS is roadmap work, not installed here."
 echo ""
 echo "Security: This is an OSINT tool. Only use on public data. Respect ToS and laws."
 echo "Uninstaller: rm -rf $INSTALL_DIR ; rm $BIN_DIR/ingress"

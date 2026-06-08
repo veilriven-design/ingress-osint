@@ -15,13 +15,24 @@ channels (e.g. Rybar for Russia, Tasnim/Fars for Iran, PLA Daily/Global Times fo
 """
 
 from __future__ import annotations
-from typing import Dict, List, Optional, TYPE_CHECKING
+
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from .models import Artifact
 
 
-def get_iran_config() -> Dict[str, List[str]]:
+class TargetConfig(TypedDict):
+    rss_feeds: list[str]
+    telegram_channels: list[str]
+    keywords: list[str]
+    x_accounts: list[str]
+    description: str
+
+
+def get_iran_config() -> TargetConfig:
     """EXTREMELY IN-DEPTH public sources and keywords for Iranian military (IRGC, Artesh, missile/drone/naval/air programs, units, exercises, claims).
     Sources are publicly known open-domain military OSINT / official statements.
     """
@@ -72,7 +83,7 @@ def get_iran_config() -> Dict[str, List[str]]:
     }
 
 
-def get_russia_config() -> Dict[str, List[str]]:
+def get_russia_config() -> TargetConfig:
     """EXTREMELY IN-DEPTH public sources and keywords for Russian military (MoD, VKS, Navy, Ground Forces, equipment, units, operations, losses, exercises).
     All from public open sources (established OSINT like Rybar, Oryx, official MoD).
     """
@@ -112,7 +123,7 @@ def get_russia_config() -> Dict[str, List[str]]:
     }
 
 
-def get_china_config() -> Dict[str, List[str]]:
+def get_china_config() -> TargetConfig:
     """EXTREMELY IN-DEPTH public sources and keywords for Chinese PLA (Eastern/Western/Southern/Northern/Central Theater Commands, Navy, Air Force, Rocket Force, exercises in Taiwan/SCS, equipment, units, drills).
     All public (PLA Daily, Global Times, official MSA announcements, CGTN).
     """
@@ -153,7 +164,7 @@ def get_china_config() -> Dict[str, List[str]]:
     }
 
 
-def get_all_targets() -> Dict[str, Dict[str, List[str]]]:
+def get_all_targets() -> dict[str, TargetConfig]:
     """Return all country configs for combined use."""
     return {
         "iran": get_iran_config(),
@@ -162,13 +173,19 @@ def get_all_targets() -> Dict[str, Dict[str, List[str]]]:
     }
 
 
-def get_target_config(countries: List[str]) -> Dict[str, List[str]]:
+def get_target_config(countries: list[str]) -> TargetConfig:
     """
     Merge configs for the requested countries (toggleable).
     Example: countries=["iran", "russia"] returns combined sources/keywords.
     """
     all_configs = get_all_targets()
-    merged = {"rss_feeds": [], "telegram_channels": [], "keywords": [], "x_accounts": [], "description": ""}
+    merged: TargetConfig = {
+        "rss_feeds": [],
+        "telegram_channels": [],
+        "keywords": [],
+        "x_accounts": [],
+        "description": "",
+    }
     for country in countries:
         if country in all_configs:
             cfg = all_configs[country]
@@ -177,9 +194,10 @@ def get_target_config(countries: List[str]) -> Dict[str, List[str]]:
             merged["keywords"].extend(cfg["keywords"])
             merged["x_accounts"].extend(cfg["x_accounts"])
             merged["description"] += f" {cfg['description']}"
-    # Dedup
-    for k in ["rss_feeds", "telegram_channels", "keywords", "x_accounts"]:
-        merged[k] = list(dict.fromkeys(merged[k]))  # preserve order, unique
+    merged["rss_feeds"] = list(dict.fromkeys(merged["rss_feeds"]))
+    merged["telegram_channels"] = list(dict.fromkeys(merged["telegram_channels"]))
+    merged["keywords"] = list(dict.fromkeys(merged["keywords"]))
+    merged["x_accounts"] = list(dict.fromkeys(merged["x_accounts"]))
     return merged
 
 
@@ -188,11 +206,15 @@ def get_target_config(countries: List[str]) -> Dict[str, List[str]]:
 # (official state media, established public OSINT channels like Rybar, etc.).
 # No synthetic/fake data.
 
-def _run_target_collectors(config: Dict[str, List[str]], limit: int = 50, db_url: Optional[str] = None) -> List["Artifact"]:
+def _run_target_collectors(
+    config: TargetConfig,
+    limit: int = 50,
+    db_url: str | None = None,
+) -> list["Artifact"]:
     """Internal: run RSS + Telegram (if creds) with the given config."""
     from .collectors.rss import RSSCollector
     from .storage import ensure_schema, insert_artifact
-    artifacts: List["Artifact"] = []
+    artifacts: list["Artifact"] = []
 
     # RSS (feeds + keywords)
     if config.get("rss_feeds"):
@@ -225,7 +247,7 @@ def _run_target_collectors(config: Dict[str, List[str]], limit: int = 50, db_url
     return artifacts
 
 
-def target_iran(limit: int = 50, db_url: Optional[str] = None) -> List["Artifact"]:
+def target_iran(limit: int = 50, db_url: str | None = None) -> list["Artifact"]:
     """Target Iranian military only. Returns Artifacts from public sources.
     Toggle via CLI: ingress ingest target --iran
     """
@@ -233,7 +255,7 @@ def target_iran(limit: int = 50, db_url: Optional[str] = None) -> List["Artifact
     return _run_target_collectors(config, limit=limit, db_url=db_url)
 
 
-def target_russia(limit: int = 50, db_url: Optional[str] = None) -> List["Artifact"]:
+def target_russia(limit: int = 50, db_url: str | None = None) -> list["Artifact"]:
     """Target Russian military only. Returns Artifacts from public sources.
     Toggle via CLI: ingress ingest target --russia
     """
@@ -241,7 +263,7 @@ def target_russia(limit: int = 50, db_url: Optional[str] = None) -> List["Artifa
     return _run_target_collectors(config, limit=limit, db_url=db_url)
 
 
-def target_china(limit: int = 50, db_url: Optional[str] = None) -> List["Artifact"]:
+def target_china(limit: int = 50, db_url: str | None = None) -> list["Artifact"]:
     """Target Chinese PLA only. Returns Artifacts from public sources.
     Toggle via CLI: ingress ingest target --china
     """
@@ -249,7 +271,7 @@ def target_china(limit: int = 50, db_url: Optional[str] = None) -> List["Artifac
     return _run_target_collectors(config, limit=limit, db_url=db_url)
 
 
-def target_multiple(countries: List[str], limit: int = 50, db_url: Optional[str] = None) -> List["Artifact"]:
+def target_multiple(countries: list[str], limit: int = 50, db_url: str | None = None) -> list["Artifact"]:
     """Toggleable multi-target. E.g. countries=['iran', 'russia'].
     All data from public sources.
     """
@@ -257,25 +279,25 @@ def target_multiple(countries: List[str], limit: int = 50, db_url: Optional[str]
     return _run_target_collectors(config, limit=limit, db_url=db_url)
 
 
-# --- Current target persistence (so `watch` adapts to last `ingest target`) ---
-import json
-from pathlib import Path
-
 _TARGET_STATE = Path.home() / ".local" / "share" / "ingress" / "current_target.json"
 
-def set_current_target(countries: List[str]) -> None:
+
+def set_current_target(countries: list[str]) -> None:
     """Persist the current target focus (e.g. ['iran'])."""
     _TARGET_STATE.parent.mkdir(parents=True, exist_ok=True)
     with open(_TARGET_STATE, "w") as f:
         json.dump({"targets": countries or []}, f)
 
-def get_current_target() -> List[str]:
+def get_current_target() -> list[str]:
     """Return the last set target(s), e.g. ['iran'] or [] if none."""
     if not _TARGET_STATE.exists():
         return []
     try:
         with open(_TARGET_STATE) as f:
             data = json.load(f)
-        return data.get("targets", [])
+        targets = data.get("targets", [])
+        if isinstance(targets, list):
+            return [target for target in targets if isinstance(target, str)]
+        return []
     except Exception:
         return []

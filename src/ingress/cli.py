@@ -10,25 +10,26 @@ visible for every item.
 
 from __future__ import annotations
 
-import argparse
 import json
 import random
 import threading
 import time
-from collections import deque, Counter
+from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any
 
 try:
+    from rich import box
+    from rich.align import Align
     from rich.console import Console, Group
-    from rich.live import Live
     from rich.layout import Layout
+    from rich.live import Live
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
-    from rich.align import Align
-    from rich import box
+
     HAS_RICH = True
 except ImportError as e:  # pragma: no cover
     HAS_RICH = False
@@ -116,21 +117,33 @@ SPARK_HISTORY = 24
 THEATERS = ["Donbas", "Black Sea", "Belgorod", "Kharkiv", "Zaporizhzhia"]
 
 STOP_EVENT = threading.Event()
-SIGNAL_QUEUE: Any = None  # will be queue in run
+SIGNAL_QUEUE: Queue[dict[str, Any]] | None = None
 STATE_LOCK = threading.Lock()
 
-recent_signals: deque = deque(maxlen=MAX_RECENT)
-source_counts: Counter = Counter()
-event_times: deque = deque(maxlen=300)
-spark_buckets: deque = deque([0] * SPARK_HISTORY, maxlen=SPARK_HISTORY)
+recent_signals: deque[dict[str, Any]] = deque(maxlen=MAX_RECENT)
+source_counts: Counter[str] = Counter()
+event_times: deque[float] = deque(maxlen=300)
+spark_buckets: deque[int] = deque([0] * SPARK_HISTORY, maxlen=SPARK_HISTORY)
 start_time = time.time()
+
+
+def reset_dashboard_state() -> None:
+    global SIGNAL_QUEUE, start_time, spark_buckets, recent_signals, source_counts, event_times
+
+    STOP_EVENT.clear()
+    SIGNAL_QUEUE = Queue()
+    recent_signals = deque(maxlen=MAX_RECENT)
+    source_counts = Counter()
+    event_times = deque(maxlen=300)
+    spark_buckets = deque([0] * SPARK_HISTORY, maxlen=SPARK_HISTORY)
+    start_time = time.time()
 
 
 def now_str() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
-def make_sparkline(buckets: deque) -> str:
+def make_sparkline(buckets: deque[int]) -> str:
     if not buckets or max(buckets) == 0:
         return "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁"
     chars = "▁▂▃▄▅▆▇█"
@@ -143,7 +156,7 @@ def make_conf_bar(conf: float, width: int = 10) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
-def feeder(stop_evt: threading.Event, q: Any) -> None:
+def feeder(stop_evt: threading.Event, q: Queue[dict[str, Any]]) -> None:
     """Generate plausible new military OSINT signals."""
     templates = [
         ("t.me/oryxspioenkop", "TELEGRAM", "Visually confirmed loss: {eq} near {loc}.", ["T-72", "BMP-3", "2S19", "BTR-82A"], ["Pokrovsk", "Vuhledar", "Chasiv Yar", "Kupyansk"]),
@@ -304,12 +317,13 @@ def build_footer(rate: float, spark: str) -> Text:
 
 def render_dashboard() -> Layout:
     # drain queue
-    while True:
-        try:
-            sig = SIGNAL_QUEUE.get_nowait()
-            update_state_from_signal(sig)
-        except Exception:
-            break
+    if SIGNAL_QUEUE is not None:
+        while True:
+            try:
+                sig = SIGNAL_QUEUE.get_nowait()
+                update_state_from_signal(sig)
+            except Empty:
+                break
 
     now = time.time()
     elapsed = max(1, now - start_time)
@@ -349,15 +363,7 @@ def run_canned(run_seconds: float = 0) -> None:
         print("If 'python3 --version' is < 3.10, use python3.11 / python3.12 explicitly (and its pip).")
         raise SystemExit(1)
 
-    global SIGNAL_QUEUE, start_time, spark_buckets, recent_signals, source_counts, event_times
-    from queue import Queue
-    SIGNAL_QUEUE = Queue()
-
-    recent_signals = deque(maxlen=MAX_RECENT)
-    source_counts = Counter()
-    event_times = deque(maxlen=300)
-    spark_buckets = deque([0] * SPARK_HISTORY, maxlen=SPARK_HISTORY)
-    start_time = time.time()
+    reset_dashboard_state()
 
     current_targets = []
     try:
@@ -369,7 +375,8 @@ def run_canned(run_seconds: float = 0) -> None:
     # Seed a few initial signals so the UI isn't empty (filter by current target if set)
     for s in SIMULATED_SIGNALS:
         if not current_targets or s.get("target") in current_targets or not s.get("target"):
-            SIGNAL_QUEUE.put(s)
+            if SIGNAL_QUEUE is not None:
+                SIGNAL_QUEUE.put(s)
 
     if current_targets:
         if len(current_targets) == 1:
@@ -399,6 +406,8 @@ def run_canned(run_seconds: float = 0) -> None:
     console.print("[dim]Legend: ▁▂▃▅█ = activity sparkline (recent signal rate over time)  •  █░░░░ = confidence bar  •  sources = top by count  •  entities = key mentioned[/]")
     console.print("[dim]Press 'q' or Ctrl-C to exit. See --help for other options.[/]\n")
 
+    if SIGNAL_QUEUE is None:
+        raise RuntimeError("Signal queue was not initialized")
     t_feeder = threading.Thread(target=feeder, args=(STOP_EVENT, SIGNAL_QUEUE), daemon=True)
     t_feeder.start()
 
@@ -437,18 +446,11 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
         print("FATAL: rich is required for the Ingress TUI.")
         raise SystemExit(1)
 
-    from queue import Queue
     import json as _json
     from .config import get_db_url
     from .storage import ensure_schema, get_recent_artifacts
-    global SIGNAL_QUEUE, start_time, spark_buckets, recent_signals, source_counts, event_times
-    SIGNAL_QUEUE = Queue()
 
-    recent_signals = deque(maxlen=MAX_RECENT)
-    source_counts = Counter()
-    event_times = deque(maxlen=300)
-    spark_buckets = deque([0] * SPARK_HISTORY, maxlen=SPARK_HISTORY)
-    start_time = time.time()
+    reset_dashboard_state()
 
     db = db_url or get_db_url()
     current_targets = []
@@ -467,7 +469,7 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
                 ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
             except Exception:
                 ts = time.time()
-            meta = {}
+            meta: dict[str, Any] = {}
             try:
                 meta = _json.loads(a.get("metadata", "{}")) if a.get("metadata") else {}
             except Exception:
@@ -483,17 +485,19 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
                 "provenance": f"db:{str(a.get('content_hash', 'n/a'))[:8]}",
                 "target": (current_targets[0] if current_targets else None),
             }
-            SIGNAL_QUEUE.put(sig)
-    except Exception as e:
+            if SIGNAL_QUEUE is not None:
+                SIGNAL_QUEUE.put(sig)
+    except Exception as exc:
         if current_targets:
             mil_str = ", ".join(t.title() for t in current_targets)
             msg = f"Using public sources for {mil_str}."
         else:
             msg = "Using public sources for the target militaries."
-        console.print(f"[yellow]Could not load data from DB. {msg}[/]")
+        console.print(f"[yellow]Could not load data from DB ({exc}). {msg}[/]")
         for s in SIMULATED_SIGNALS:
             if not current_targets or s.get("target") in current_targets or not s.get("target"):
-                SIGNAL_QUEUE.put(s)
+                if SIGNAL_QUEUE is not None:
+                    SIGNAL_QUEUE.put(s)
 
     if current_targets:
         if len(current_targets) == 1:
@@ -516,9 +520,6 @@ def run_watch(db_url: str | None = None, run_seconds: float = 0) -> None:
     ))
     console.print("[dim]Legend: ▁▂▃▅█ = activity sparkline (recent signal rate over time)  •  █░░░░ = confidence bar  •  sources = top by count  •  entities = key mentioned[/]")
     console.print("[dim]Press 'q' or Ctrl-C to exit. This is a functional TUI.[/]\n")
-
-    t_feeder = threading.Thread(target=feeder, args=(STOP_EVENT, SIGNAL_QUEUE), daemon=True)
-    t_feeder.start()
 
     layout = Layout()
     live = Live(layout, console=console, refresh_per_second=3, screen=True)
@@ -569,9 +570,12 @@ def watch(
     russia = russia if isinstance(russia, bool) else False
     china = china if isinstance(china, bool) else False
     targets = []
-    if iran: targets.append("iran")
-    if russia: targets.append("russia")
-    if china: targets.append("china")
+    if iran:
+        targets.append("iran")
+    if russia:
+        targets.append("russia")
+    if china:
+        targets.append("china")
     if targets:
         from .targeting import set_current_target
         set_current_target(targets)
@@ -597,7 +601,7 @@ def ingest_rss(
         None,
         "--db-url",
         envvar="INGRESS_DB_URL",
-        help="Database URL (sqlite://... or postgresql://...). Defaults to config / sqlite DB.",
+        help="SQLite database URL (sqlite://...). Defaults to config / sqlite DB.",
     ),
     limit: int | None = typer.Option(None, "--limit", help="Only process first N entries (debug)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Parse and show but do not write to DB"),
@@ -635,11 +639,11 @@ def ingest_rss(
         console.print("[dim]--dry-run: nothing written.[/]")
         return
 
-    # Ensure schema (sqlite convenience; for pg prefer alembic)
+    # Ensure schema for the current SQLite storage layer.
     try:
         ensure_schema(db_url)
     except Exception as e:
-        console.print(f"[yellow]ensure_schema warning (may be fine if using alembic): {e}[/]")
+        console.print(f"[yellow]ensure_schema warning: {e}[/]")
 
     stored = 0
     for art in artifacts:
@@ -758,25 +762,23 @@ def ingest_target(
       ingress ingest target --iran
       ingress ingest target --russia --china
     """
-    import os
     from .targeting import get_target_config
-    from .collectors.rss import RSSCollector
-    from .collectors.telegram import TelegramCollector
-    from .storage import ensure_schema, insert_artifact
+
     # Normalize flags (when invoked directly in python the defaults are typer.Option objects)
     iran = iran if isinstance(iran, bool) else False
     russia = russia if isinstance(russia, bool) else False
     china = china if isinstance(china, bool) else False
     targets = []
-    if iran: targets.append("iran")
-    if russia: targets.append("russia")
-    if china: targets.append("china")
+    if iran:
+        targets.append("iran")
+    if russia:
+        targets.append("russia")
+    if china:
+        targets.append("china")
 
     if not targets:
         console.print("[red]Provide at least one --iran / --russia / --china[/]")
         raise typer.Exit(1)
-
-    if hasattr(db_url, "default"): db_url = db_url.default
 
     config = get_target_config(targets)
 
@@ -796,11 +798,11 @@ def ingest_target(
     from .targeting import set_current_target, target_multiple
     set_current_target(targets)  # so watch adapts automatically
 
-    arts = target_multiple(targets, limit=limit, db_url=db_url)
+    arts = target_multiple(targets, limit=limit or 50, db_url=db_url)
 
     console.print(f"[green]  Collected {len(arts)} artifacts from targeted public sources.[/]")
     if db_url:
-        console.print(f"[dim]  Stored to DB (deduped).[/]")
+        console.print("[dim]  Stored to DB (deduped).[/]")
     else:
         console.print("[dim]  (Run with --db-url to persist for watch/delta/export.)[/]")
 
@@ -815,7 +817,7 @@ def ingest_x(
     db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL"),
 ) -> None:
     """
-    X/Twitter ingest stub (PR6).
+    X/Twitter ingest is not implemented in this build.
 
     Implementation requires X API access (paid tiers as of 2024).
     This command exists to document the interface and will be filled when
@@ -824,7 +826,6 @@ def ingest_x(
     console.print("[yellow]X collector is a stub in this build.[/]")
     console.print("Intended usage: provide --keywords and/or --accounts + bearer token via env.")
     console.print("For now use RSS and Telegram collectors (they work today).")
-    # TODO: when ready, instantiate XCollector and wire to storage like the others
 
 
 @app.command("delta")
@@ -838,7 +839,6 @@ def delta(
     This is the core 'as it enters the open domains' experience.
     For MVP it does time-based filtering + simple keyword similarity to reduce noise.
     """
-    from datetime import datetime, timedelta, timezone, datetime as dt  # for sighting timestamp
     from .config import get_db_url
     from .storage import ensure_schema, get_recent_artifacts
 
@@ -896,8 +896,6 @@ def export_geojson(
     db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL"),
 ) -> None:
     """Export current sightings as GeoJSON FeatureCollection (for mapping tools)."""
-    import json
-    from datetime import datetime
     from .config import get_db_url
     from .storage import get_sightings
 
@@ -918,8 +916,8 @@ def export_geojson(
                 "timestamp": s["timestamp"],
                 "description": s.get("description"),
                 "confidence": s.get("confidence"),
-                "entities": json.loads(s["entities"]) if s.get("entities") else [],
-                "artifact_ids": json.loads(s["artifact_ids"]) if s.get("artifact_ids") else [],
+                "entities": s.get("entities") or [],
+                "artifact_ids": s.get("artifact_ids") or [],
             },
         }
         features.append(feat)
@@ -935,12 +933,12 @@ def db_command(
     action: str = typer.Argument(..., help="Action: 'init' (ensure tables for sqlite)"),
     db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL"),
 ) -> None:
-    """Lightweight DB helpers (PR2). For full migrations use alembic directly."""
+    """Lightweight DB helpers for the SQLite storage layer."""
     from .storage import ensure_schema
 
     if action == "init":
         ensure_schema(db_url)
-        console.print("[green]Schema ensured.[/] (sqlite creates tables; pg should use 'alembic upgrade head')")
+        console.print("[green]Schema ensured.[/] (SQLite tables are ready)")
     else:
         console.print(f"[red]Unknown action '{action}'. Try 'init'.[/]")
         raise typer.Exit(1)
@@ -950,16 +948,18 @@ def db_command(
 
 CASES_FILE = Path.home() / ".local" / "share" / "ingress" / "cases.json"
 
-def _load_cases():
+def _load_cases() -> dict[str, dict[str, Any]]:
     CASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     if CASES_FILE.exists():
         try:
-            return json.loads(CASES_FILE.read_text())
+            data = json.loads(CASES_FILE.read_text())
+            return data if isinstance(data, dict) else {}
         except Exception:
             pass
     return {}
 
-def _save_cases(cases):
+
+def _save_cases(cases: dict[str, dict[str, Any]]) -> None:
     CASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     CASES_FILE.write_text(json.dumps(cases, indent=2))
 
@@ -1156,9 +1156,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    # Support `python -m ingress.cli`
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "demo":
-        demo()
-    else:
-        app()
+    app()

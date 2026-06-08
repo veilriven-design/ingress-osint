@@ -4,11 +4,11 @@ Minimal geoparser for targeting.
 In a full build this would use geotext + military location boosting.
 """
 
-from typing import List, Optional, Dict, Any
+from typing import Any, Optional
 
 
-def geoparse(text: str) -> List[str]:
-    """Very basic placeholder geoparser. Returns empty or dummy locations."""
+def geoparse(text: str) -> list[str]:
+    """Return known military-relevant place hints found in free text."""
     if not text:
         return []
     # Dummy: look for common military places mentioned in keywords
@@ -20,11 +20,12 @@ def geoparse(text: str) -> List[str]:
     return list(set(places)) or []
 
 
-def extract_geo_from_analysis(analysis: Dict[str, Any]) -> Optional[Dict[str, float]]:
+def extract_geo_from_analysis(analysis: dict[str, Any]) -> Optional[dict[str, float]]:
     """Extract lat/lon from exif or analysis if present."""
-    if analysis.get("gps"):
-        return analysis["gps"]
+    gps = analysis.get("gps")
+    if isinstance(gps, dict) and "lat" in gps and "lon" in gps:
+        return {"lat": float(gps["lat"]), "lon": float(gps["lon"])}
     exif = analysis.get("exif", {})
-    if "GPSLatitude" in exif and "GPSLongitude" in exif:
+    if isinstance(exif, dict) and "GPSLatitude" in exif and "GPSLongitude" in exif:
         return {"lat": float(exif["GPSLatitude"]), "lon": float(exif["GPSLongitude"])}
     return None

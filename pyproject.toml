@@ -33,7 +33,7 @@ classifiers = [
 ]
 dependencies = [
   "rich>=13.0",
-  "typer[all]>=0.9",
+  "typer>=0.9",
   "pydantic>=2.0",
   "pydantic-settings>=2.0",
 ]
@@ -41,7 +41,7 @@ dependencies = [
 [project.optional-dependencies]
 demo = []  # pure stdlib + rich/typer for zero-extra demo
 storage = [
-  "psycopg[binary]>=3.2",  # Postgres (binary wheels for easy install). SQLite fallback uses stdlib sqlite3.
+  # SQLite storage uses the Python standard library.
 ]
 media = [
   "imagehash>=4.3",  # Perceptual hashing for images (dedup, reverse search)
@@ -58,7 +58,6 @@ full = [
   "feedparser>=6.0",      # RSS
   "telethon>=1.30",       # Telegram (optional, user provides API creds)
   "httpx>=0.25",
-  "psycopg[binary]>=3.2",
   "imagehash>=4.3",
   "Pillow>=10.0",
   "geotext>=0.4.0",
@@ -69,8 +68,6 @@ dev = [
   "pytest>=8.0",
   "ruff>=0.4",
   "mypy>=1.10",
-  "alembic>=1.13",        # DB migrations (run with: alembic upgrade head after setting DB_URL)
-  "psycopg[binary]>=3.2",
   "geotext>=0.4.0",
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",

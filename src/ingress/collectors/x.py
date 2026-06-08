@@ -8,15 +8,15 @@ and `ingress ingest target` etc. do not crash on import.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any
 
 from ..models import Artifact
 
 
 class XCollector:
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         pass
 
-    def collect(self, *args, **kwargs) -> List[Artifact]:
-        print("[yellow]X collector is a stub. Provide bearer token + implement for use.[/yellow]")
+    def collect(self, *args: Any, **kwargs: Any) -> list[Artifact]:
+        print("X collector is a stub. Provide bearer token + implement for use.")
         return []
