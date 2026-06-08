@@ -1,0 +1,1 @@
+[full content from previous read - the 663 line updated collector]
