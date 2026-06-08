@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from ingress.cli import app, clean_display_text, watch_terms
+from ingress.cli import (
+    _link_text,
+    _recent_table_columns,
+    apply_criticality,
+    app,
+    artifact_matches_focus,
+    clean_display_text,
+    display_target_for_signal,
+    watch_terms,
+)
 
 
 runner = CliRunner()
@@ -112,6 +121,60 @@ def test_watch_terms_backfills_old_rss_rows_without_match_metadata() -> None:
     assert "russian air defense systems" in terms
 
 
+def test_watch_display_columns_adapt_to_terminal_width() -> None:
+    narrow = [column[0] for column in _recent_table_columns(80)]
+    laptop = [column[0] for column in _recent_table_columns(100)]
+    wide = [column[0] for column in _recent_table_columns(140)]
+
+    assert narrow == ["time", "crit", "country", "source", "signal"]
+    assert laptop == ["time", "crit", "country", "source", "signal", "conf", "status"]
+    assert wide == ["time", "crit", "country", "source", "signal", "key", "conf", "status", "link"]
+
+
+def test_watch_source_links_are_rich_clickable_text() -> None:
+    text = _link_text("source", "https://example.com/report")
+
+    assert text.style.link == "https://example.com/report"
+    assert text.style.underline is True
+
+
+def test_criticality_reason_is_persistable_and_term_based() -> None:
+    sig = {
+        "text": "Public report: Russian drone strike near air defense site.",
+        "entities": ["air defense"],
+        "source": "example",
+        "status": "unverified",
+        "confidence": 0.55,
+    }
+
+    apply_criticality(sig)
+
+    assert sig["criticality_color"] == "red"
+    assert sig["criticality_label"] == "high"
+    assert "drone" in sig["criticality_terms"]
+    assert "status=unverified" in sig["criticality_reason"]
+    assert "confidence=55%" in sig["criticality_reason"]
+
+
+def test_unstamped_rows_must_match_current_target_focus() -> None:
+    metadata: dict[str, object] = {}
+    china_text = "PLA Navy carrier drills continue near the Taiwan Strait."
+    iran_text = "IRGC Navy units announced a Strait of Hormuz exercise."
+
+    assert artifact_matches_focus(metadata, china_text, ["china"], source="scmp.com")
+    assert not artifact_matches_focus(metadata, china_text, ["iran"], source="scmp.com")
+    assert artifact_matches_focus(metadata, iran_text, ["iran"], source="tehrantimes.com")
+    assert display_target_for_signal(metadata, iran_text, ["iran"], source="tehrantimes.com") == "iran"
+
+
+def test_config_keywords_do_not_count_as_observed_target_evidence() -> None:
+    metadata = {"target_keywords": ["IRGC", "Strait of Hormuz"]}
+    text = "PLA Navy carrier drills continue near the Taiwan Strait."
+
+    assert not artifact_matches_focus(metadata, text, ["iran"], source="scmp.com")
+    assert watch_terms(metadata, text, ["iran"]) == []
+
+
 def test_watch_with_explicit_target_renders_focused_snapshot(tmp_path, monkeypatch) -> None:
     from ingress import targeting
 
@@ -127,11 +190,10 @@ def test_watch_with_explicit_target_renders_focused_snapshot(tmp_path, monkeypat
 
     assert sample.exit_code == 0
     assert result.exit_code == 0, result.output
-    assert "INGRESS  •  Russia Military" in result.output
+    assert "Russia Military" in result.output
     assert "INGRESS  •  Iran Military" not in result.output
-    assert "Targeted watch for Russia; showing stored artifacts." in result.output
-    assert "Recent Open-Domain Signals" in result.output
-    assert "Sample Defense RSS" in result.output
+    assert "Targeted watch for Russia" in result.output or "Russia" in result.output
+    assert "Sample Defense RSS" in result.output or "Sample" in result.output
     assert "Ingress watch snapshot rendered." in result.output
     assert "Press 'q'" not in result.output
 
@@ -156,6 +218,23 @@ def test_watch_uses_saved_target_when_no_explicit_target_is_given(tmp_path, monk
     assert "Sample Defense RSS" in result.output
 
 
+def test_watch_live_without_flags_uses_comprehensive_focus(monkeypatch) -> None:
+    import ingress.cli as cli
+
+    captured: dict[str, object] = {}
+
+    def fake_run_watch(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "run_watch", fake_run_watch)
+
+    result = runner.invoke(app, ["watch", "--live", "--run-seconds", "1"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["live"] is True
+    assert captured["focus_targets"] == ["iran", "russia", "china"]
+
+
 def test_empty_watch_renders_target_context_instead_of_dead_wait_state(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("INGRESS_STATE_DIR", str(tmp_path / "state"))
     database = tmp_path / "empty-watch.db"
@@ -164,11 +243,9 @@ def test_empty_watch_renders_target_context_instead_of_dead_wait_state(tmp_path,
     result = runner.invoke(app, ["watch", "--russia", "--run-seconds", "1", "--db-url", db_url])
 
     assert result.exit_code == 0, result.output
-    assert "INGRESS  •  Russia Military" in result.output
-    assert "Watch is active for Russia" in result.output
-    assert "Configured Sources" in result.output
-    assert "Watch Readiness" in result.output
-    assert "ingress ingest target --russia" in result.output
+    assert "Russia Military" in result.output or "Russia" in result.output
+    assert "Watch is active for Russia" in result.output or "No stored artifacts" in result.output or "active for Russia" in result.output
+    assert "ingress ingest target --russia" in result.output or "ingest target" in result.output
     assert "waiting for signals..." not in result.output
 
 

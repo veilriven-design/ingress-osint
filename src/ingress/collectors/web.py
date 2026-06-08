@@ -66,7 +66,7 @@ def _fetch(url: str, timeout: float = 12.0) -> str:
     # urllib fallback
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read(4_000_000)
+        raw = bytes(resp.read(4_000_000))
         try:
             return raw.decode(resp.headers.get_content_charset() or "utf-8", errors="replace")
         except Exception:

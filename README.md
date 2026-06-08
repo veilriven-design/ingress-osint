@@ -9,7 +9,7 @@ Status: alpha, but the core CLI, SQLite storage, RSS ingest, credentialed Telegr
 ## What Works Today
 
 - Rich `ingress demo` TUI with synthetic sample signals for first-run orientation.
-- `ingress watch` TUI (and `watch --live`) backed by SQLite; `--live` runs background collectors polling public RSS + web sources in real time and surfaces new signals immediately in the dashboard (plus DB tailer).
+- `ingress watch` TUI (and `watch --live`) backed by SQLite + automatic append-only JSONL audit files: daily `data/ingress-watch-*.jsonl` for rendered watch observations and timestamped `data/ingress-live-*.jsonl` for live polling sessions. `--live` (no country flags) runs the **comprehensive military scanner** for Iran + Russia + China by default, polling dozens of public sources in real time. The TUI adapts to laptop and widescreen terminals, keeps source/link cells clickable in Rich-capable terminals, color-codes criticality, and writes `criticality_reason`, `criticality_terms`, and `raw_ref` for every logged signal.
 - RSS/Atom ingest with content-hash deduplication and provenance rows.
 - Telegram public-channel ingest through Telethon when `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are provided.
 - Target presets for Iran, Russia, and China that combine dozens of public RSS feeds, Telegram channels, keyword filters, and curated public web pages (from many domains across the internet).
@@ -25,6 +25,7 @@ Not implemented yet: Postgres/PostGIS migrations, Docker Compose, ADS-B/AIS/Sent
 - Dramatically expanded public source lists for Iran, Russia, and China (many more RSS feeds from Defense News sections, Kyiv Independent, RealClearDefense, Tasnim, Mehr, SCMP, China defense blogs, Al Jazeera, ISW, etc.).
 - New WebPageCollector for high-signal public pages without reliable RSS (e.g. chinamil.com.cn English, Understanding War, Tasnim home, SCMP PLA topics). Explicitly listed and keyword-filtered.
 - `ingress watch --live` : real-time background polling of your chosen public RSS + web sources while the TUI renders live updates (plus DB tailer for external ingests). Signals appear with provenance "live-rss:..." / "live-web:...".
+- Adaptive watch display: narrow terminals get terse target/source/signal rows plus a compact color-code legend; wider terminals add confidence, status, key terms, and clickable link columns.
 - `ingress ingest web <public-url>` for ad-hoc page snapshots.
 - Better geoparsing (expanded military locations + optional geotext), stored in artifact metadata for TUI/entities panels.
 - All collection remains bounded, keyword-filtered where appropriate, provenance-preserving, and opt-in. "From everywhere on the internet" means curated high-value public domains, not indiscriminate scrape.
@@ -88,13 +89,22 @@ Ingest (or snapshot) a specific public web page for sources without RSS:
 ingress ingest web http://eng.chinamil.com.cn/ --db-url sqlite:///./data/ingress.db
 ```
 
-Watch stored data (or live from the open internet):
+Watch stored data (or live comprehensive scanner from the open internet):
 
 ```bash
 ingress watch --db-url sqlite:///./data/ingress.db
-# Real-time collection + display from dozens of public RSS feeds and key web pages:
-ingress watch --live --iran --russia --china --db-url sqlite:///./data/ingress.db
+# Default "comprehensive military scanner" for Iran + Russia + China:
+# Pulls in real time from 40+ public RSS feeds + key web pages (Defense News,
+# Kyiv Independent, Tasnim, SCMP, chinamil, ISW, Jamestown, Breaking Defense, etc.).
+# All signals are keyword-filtered for military relevance, stored to SQLite,
+# AND appended to an easy-to-analyze daily JSONL file (perfect for analysts: jq, tail -f, pandas, etc.).
+ingress watch --live --db-url sqlite:///./data/ingress.db
+
+# Or focus on one:
+ingress watch --live --russia --db-url sqlite:///./data/ingress.db
 ```
+
+Analyst tip: after a live scan session the JSONL + the SQLite DB in `data/` give you everything in easily scriptable formats. Example: `jq 'select(.target=="russia") | .text' data/ingress-live-*.jsonl`
 
 Use targeted public-source presets (now with many more public RSS + web pages from global domains):
 

@@ -37,8 +37,9 @@ class TargetConfig(TypedDict):
 
 
 def get_iran_config() -> TargetConfig:
-    """EXTREMELY IN-DEPTH public sources and keywords for Iranian military (IRGC, Artesh, missile/drone/naval/air programs, units, exercises, claims).
-    Sources are publicly known open-domain military OSINT / official statements. From public domains across the internet.
+    """Comprehensive public sources for Iranian military (IRGC, Artesh, missile/drone/naval/air, exercises, claims, Quds Force).
+    Curated from many public domains (state English services, regional/international defense & ME news, OSINT). Keyword filtered.
+    Used by default in 'ingress watch --live' as part of the Iran/Russia/China military scanner.
     """
     return {
         "rss_feeds": [
@@ -47,28 +48,28 @@ def get_iran_config() -> TargetConfig:
             "https://www.tehrantimes.com/rss",
             "https://www.aljazeera.com/xml/rss/all.xml",
             "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml",
-            # Additional high-signal public feeds frequently covering Iran military developments
             "https://kyivindependent.com/news-archive/rss/",
             "https://www.realcleardefense.com/rss",
             "https://rss.feedburner.com/defensenews/feed",
-            # Iran state / semi-state English public RSS where available (public)
+            # Iran state / semi-state English public RSS
             "https://www.tasnimnews.com/en/rss/feed/0/7/0/all-stories",
             "https://en.mehrnews.com/rss",
             "https://www.al-monitor.com/rss",
+            # Additional high-value public feeds that regularly cover Iranian military activity
+            "https://breakingdefense.com/feed/",
+            "https://en.irna.ir/rss",
+            "https://www.presstv.ir/rss",
+            "https://www.middleeasteye.net/feed",
+            "https://apnews.com/rss",
+            "https://www.militarytimes.com/arc/outboundfeeds/rss/",
+            "https://thedrive.com/the-war-zone/rss",
         ],
         "telegram_channels": [
-            # Public Telegram channels for Iranian military signals (official/state/OSINT)
-            "Tasnimnews",
-            "FarsNewsAgency",
-            "IRIMFA_EN",
-            "IranIntl",
-            "PressTV",
-            # Additional public OSINT for depth (from public reports)
-            "Osint613",
-            "BashaReport",
+            "Tasnimnews", "FarsNewsAgency", "IRIMFA_EN", "IranIntl", "PressTV",
+            "Osint613", "BashaReport",
         ],
         "keywords": [
-            # Extremely deep military terms for Iran (equipment, units, locations, programs)
+            # Deep military terms for Iran
             "IRGC", "Islamic Revolutionary Guard Corps", "IRGC Navy", "IRGC Aerospace Force", "IRGC-ASF",
             "Artesh", "Islamic Republic of Iran Army", "IRIAF",
             "Shahed", "Shahed-136", "Shahed-131", "Ababil", "Karrar", "F-14 Tomcat Iran",
@@ -81,31 +82,31 @@ def get_iran_config() -> TargetConfig:
             "Mowj class", "Jamaran", "Sahand destroyer",
             "submarine Iran", "Fateh class", "Ghadir", "Younes",
             "helicopter Iran", "Mi-17", "Bell 214", "AH-1 Cobra Iran",
-            "air defense Iran", "S-300", "Bavar-373", "Mersad",
+            "S-300", "Bavar-373", "Mersad",
             "naval exercise Iran", "Velayat", "Eqtedar", "IRGC wargame",
             "IRGC Quds Force", "missile barrage", "drone swarm Iran", "IRGC electronic warfare"
         ],
         "x_accounts": [
-            "IRIMFA_EN",   # Official
-            "CENTCOM",     # US posts on Iranian activities
-            "Osint613",
-            "BashaReport",
-            "IntelCrab",   # Known Iran OSINT
+            "IRIMFA_EN", "CENTCOM", "Osint613", "BashaReport", "IntelCrab",
         ],
         "web_pages": [
-            # Public web pages (no reliable RSS or high-signal landing pages) - bounded explicit list
+            # High-signal public pages (official English, analysis hubs) — explicit & bounded
             "https://www.tasnimnews.com/en",
             "https://www.tehrantimes.com/",
             "https://www.iranintl.com/en",
             "https://en.mehrnews.com/",
+            "https://en.irna.ir/",
+            "https://www.presstv.ir/",
+            "https://www.iranwatch.org/",
         ],
-        "description": "EXTREMELY DEEP Iranian military (IRGC/Artesh): missiles (ballistic/cruise), drones (Shahed), naval (IRGCN, Artesh), air defense, exercises, bases, units, official claims. Public sources from many domains."
+        "description": "Comprehensive Iranian military (IRGC/Artesh): missiles, drones (Shahed), naval, air defense, exercises, bases, Quds Force. Public sources from many domains."
     }
 
 
 def get_russia_config() -> TargetConfig:
-    """EXTREMELY IN-DEPTH public sources and keywords for Russian military (MoD, VKS, Navy, Ground Forces, equipment, units, operations, losses, exercises).
-    All from public open sources (established OSINT like Rybar, Oryx, official MoD). Sources from public domains across the internet.
+    """Comprehensive public sources for Russian military (MoD, VKS, Navy, Ground Forces, equipment, units, ops, losses, EW, exercises).
+    Curated from many public domains (Ukrainian/independent defense reporting, ISW, Western defense pubs, OSINT). Keyword filtered.
+    Used by default in 'ingress watch --live' as part of the Iran/Russia/China military scanner.
     """
     return {
         "rss_feeds": [
@@ -115,23 +116,27 @@ def get_russia_config() -> TargetConfig:
             "https://www.defensenews.com/arc/outboundfeeds/rss/category/land/?outputType=xml",
             "https://www.realcleardefense.com/rss",
             "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml",
-            # Additional public defense / conflict reporting feeds
             "https://defence-blog.com/topics/russia-ukraine/feed/",
             "https://kyivindependent.com/rss/",
             "https://rss.feedburner.com/defensenews/feed",
-            # ISW and analytical public updates (daily assessments frequently cover RU mil)
+            # ISW and analytical public updates (daily assessments)
             "https://understandingwar.org/rss.xml",
             "https://www.understandingwar.org/rss",
+            # Additional strong public sources frequently covering Russian military activity
+            "https://breakingdefense.com/feed/",
+            "https://mil.in.ua/en/feed/",
+            "https://www.kyivpost.com/rss",
+            "https://www.militarytimes.com/arc/outboundfeeds/rss/",
+            "https://thedrive.com/the-war-zone/rss",
+            "https://apnews.com/rss",
+            "https://www.rferl.org/api/z$yre",
+            "https://www.bbc.com/news/world/europe/rss.xml",
         ],
         "telegram_channels": [
-            "rybar",           # Rybar (highly cited for Russian military ops, units, equipment)
-            "mod_russia",      # Official Russian MoD (public)
-            "zvezdanews",      # Zvezda (MoD media)
-            # More public OSINT for depth
-            "ReverseSideOfTheMedal",
+            "rybar", "mod_russia", "zvezdanews", "ReverseSideOfTheMedal",
         ],
         "keywords": [
-            # Extremely deep terms: equipment, specific units, operations, losses, districts
+            # Deep terms for Russian military
             "T-72", "T-72B3", "T-80", "T-80BV", "T-90", "T-90M", "BMP-2", "BMP-3", "BTR-82A", "MT-LB",
             "Su-35", "Su-27", "Su-30", "Su-34", "MiG-29", "MiG-31", "Tu-95", "Tu-22M3",
             "Iskander", "Kalibr", "Kinzhal", "S-400", "S-300", "Pantsir", "Lancet", "Orlan-10",
@@ -147,24 +152,26 @@ def get_russia_config() -> TargetConfig:
             "Russian air defense", "Russian air defense systems", "S-400 battery", "Mi-8", "Ka-52", "Mi-28"
         ],
         "x_accounts": [
-            "mod_russia",  # Official
-            "oryxspioenkop",  # 
-            "zvezdanews",
+            "mod_russia", "oryxspioenkop", "zvezdanews",
         ],
         "web_pages": [
-            # Public pages with frequent high-signal updates (no/fragile RSS)
+            # High-signal public pages with frequent updates
             "https://understandingwar.org/",
             "https://www.kyivindependent.com/",
             "https://www.realcleardefense.com/",
             "https://defence-blog.com/",
+            "https://mil.in.ua/en/",
+            "https://www.understandingwar.org/research/russia-ukraine",
+            "https://jamestown.org/regions/russia/",
         ],
-        "description": "EXTREMELY DEEP Russian military: specific equipment (T-72B3, Su-35, Iskander, Lancet), units (1st GTA, VDV divisions), fleets, districts, losses (Oryx), official claims, electronic warfare, UAVs. Public OSINT + MoD from many domains."
+        "description": "Comprehensive Russian military: equipment (T-72B3 etc), units, fleets, districts, losses (Oryx), EW, UAVs, official claims. Public sources from many domains."
     }
 
 
 def get_china_config() -> TargetConfig:
-    """EXTREMELY IN-DEPTH public sources and keywords for Chinese PLA (Eastern/Western/Southern/Northern/Central Theater Commands, Navy, Air Force, Rocket Force, exercises in Taiwan/SCS, equipment, units, drills).
-    All public (PLA Daily, Global Times, official MSA announcements, CGTN). Sources from public domains across the internet.
+    """Comprehensive public sources for Chinese PLA (Theater Commands, PLAN, PLAAF, Rocket Force, exercises in Taiwan Strait/SCS, equipment, drills, buildup).
+    Curated from many public domains (SCMP, Defense News Asia, official English PLA site, China defense analysis, think tanks). Keyword filtered.
+    Used by default in 'ingress watch --live' as part of the Iran/Russia/China military scanner.
     """
     return {
         "rss_feeds": [
@@ -173,19 +180,25 @@ def get_china_config() -> TargetConfig:
             "https://www.scmp.com/rss/4/feed",
             "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml",
             "https://www.realcleardefense.com/rss",
-            # Additional public English-language mil/defense feeds covering PLAN / PLAAF / Rocket Force activity
             "https://china-defense.blogspot.com/feeds/posts/default",
             "https://www.china-arms.com/feed/",
             "https://rss.feedburner.com/defensenews/feed",
             "https://www.aljazeera.com/xml/rss/all.xml",
+            # Additional public English sources that regularly cover PLA / China military developments
+            "https://breakingdefense.com/feed/",
+            "https://www.globaltimes.cn/rss/china.xml",
+            "http://www.news.cn/english/rss/worldrss.xml",
+            "https://jamestown.org/feed/",
+            "https://www.militarytimes.com/arc/outboundfeeds/rss/",
+            "https://thedrive.com/the-war-zone/rss",
+            "https://www.csis.org/rss",
+            "https://apnews.com/rss",
         ],
         "telegram_channels": [
-            # Public for PLA
-            "globaltimesnews",
-            "CGTNOfficial",
+            "globaltimesnews", "CGTNOfficial",
         ],
         "keywords": [
-            # Extremely deep terms: specific units, equipment, exercises, locations
+            # Deep terms for Chinese PLA
             "PLA", "People's Liberation Army", "Eastern Theater Command", "Western Theater Command",
             "Southern Theater Command", "Northern Theater Command", "Central Theater Command",
             "PLA Navy", "PLAN", "Type 055", "Type 052D", "Type 003", "Shandong", "Liaoning", "Fujian carrier",
@@ -204,18 +217,19 @@ def get_china_config() -> TargetConfig:
             "PLA Marine Corps", "PLAMC", "amphibious assault", "island landing drill"
         ],
         "x_accounts": [
-            "globaltimesnews",
-            "CGTNOfficial",
-            "ChinaMilitary",  # PLA media
+            "globaltimesnews", "CGTNOfficial", "ChinaMilitary",
         ],
         "web_pages": [
-            # Official / high-signal public pages (PLA English home, SCMP PLA coverage, etc.)
+            # High-signal public pages (official English PLA, analysis, think tanks)
             "http://eng.chinamil.com.cn/",
             "https://www.scmp.com/topics/pla-daily",
             "https://www.scmp.com/asia",
             "https://www.scmp.com/topics/china-military",
+            "https://jamestown.org/program/china-brief/",
+            "https://www.csis.org/programs/china-power-project",
+            "https://www.rand.org/topics/china.html",
         ],
-        "description": "EXTREMELY DEEP Chinese PLA: Theater Commands, specific ships (Type 055, Shandong), aircraft (J-20), missiles (DF-21/26), exercises (Taiwan Strait, SCS), units (Marine Corps, Rocket Force), official drills/announcements. Public sources from many domains."
+        "description": "Comprehensive Chinese PLA: Theater Commands, ships (Type 055 etc), aircraft (J-20), missiles (DF-21/26), exercises (Taiwan/SCS), Rocket Force, buildup. Public sources from many domains."
     }
 
 

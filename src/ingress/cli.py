@@ -30,6 +30,7 @@ try:
     from rich.layout import Layout
     from rich.live import Live
     from rich.panel import Panel
+    from rich.style import Style
     from rich.table import Table
     from rich.text import Text
 
@@ -115,7 +116,7 @@ SIMULATED_SIGNALS: list[dict[str, Any]] = [
     },
 ]
 
-MAX_RECENT = 12
+MAX_RECENT = 20
 SPARK_HISTORY = 24
 THEATERS = ["Donbas", "Black Sea", "Belgorod", "Kharkiv", "Zaporizhzhia"]
 
@@ -125,6 +126,8 @@ STATE_LOCK = threading.Lock()
 
 recent_signals: deque[dict[str, Any]] = deque(maxlen=MAX_RECENT)
 source_counts: Counter[str] = Counter()
+country_counts: Counter[str] = Counter()
+place_counts: Counter[str] = Counter()
 event_times: deque[float] = deque(maxlen=300)
 spark_buckets: deque[int] = deque([0] * SPARK_HISTORY, maxlen=SPARK_HISTORY)
 start_time = time.time()
@@ -132,12 +135,14 @@ watch_empty_context: dict[str, Any] = {}
 
 
 def reset_dashboard_state() -> None:
-    global SIGNAL_QUEUE, start_time, spark_buckets, recent_signals, source_counts, event_times, watch_empty_context
+    global SIGNAL_QUEUE, start_time, spark_buckets, recent_signals, source_counts, country_counts, place_counts, event_times, watch_empty_context
 
     STOP_EVENT.clear()
     SIGNAL_QUEUE = Queue()
     recent_signals = deque(maxlen=MAX_RECENT)
     source_counts = Counter()
+    country_counts = Counter()
+    place_counts = Counter()
     event_times = deque(maxlen=300)
     spark_buckets = deque([0] * SPARK_HISTORY, maxlen=SPARK_HISTORY)
     start_time = time.time()
@@ -219,11 +224,22 @@ def update_state_from_signal(sig: dict[str, Any]) -> None:
         source_counts[sig["source"]] += 1
         event_times.append(sig["ts"])
         spark_buckets[-1] += 1
+        # Track countries for scanner view
+        t = (sig.get("target") or "").lower()
+        if t in ("iran", "russia", "china"):
+            country_counts[t] += 1
+        # Track places from entities or metadata hints if present in sig
+        for p in (sig.get("entities") or []):
+            if isinstance(p, str) and len(p) > 2:
+                place_counts[p] += 1
 
 
-def build_header(stats: str) -> Panel:
+def build_header(stats: str, live: bool = False) -> Panel:
     title = Text("INGRESS", style="bold red")
-    subtitle = Text("  Military OSINT • Iranian, Chinese & Russian forces  •  v" + __version__, style="dim")
+    sub = "COMPREHENSIVE MILITARY SCANNER • Iran + Russia + China  •  dozens of public domains"
+    if not live:
+        sub = "Military OSINT • Iranian, Chinese & Russian forces  •  v" + __version__
+    subtitle = Text("  " + sub, style="dim")
     return Panel(
         Align.center(Group(title, subtitle, Text(stats, style="bold"))),
         box=box.HEAVY,
@@ -231,7 +247,14 @@ def build_header(stats: str) -> Panel:
     )
 
 
-def target_watch_title(targets: list[str], *, storage: bool = False) -> tuple[str, str]:
+def target_watch_title(targets: list[str], *, storage: bool = False, live: bool = False) -> tuple[str, str]:
+    is_comprehensive = (not targets or set(targets) >= {"iran", "russia", "china"}) and live
+    if is_comprehensive:
+        source = "live public sources (comprehensive scanner)" if not storage else "stored artifacts"
+        return (
+            "INGRESS  •  COMPREHENSIVE MILITARY SCANNER",
+            f"Iran + Russia + China  •  Pulling from dozens of public RSS + web domains  •  {source}",
+        )
     if targets:
         names = [target.title() for target in targets]
         label = names[0] if len(names) == 1 else " / ".join(names)
@@ -258,6 +281,101 @@ def metadata_targets(metadata: dict[str, Any]) -> set[str]:
     return targets
 
 
+TARGET_ALIASES: dict[str, tuple[str, ...]] = {
+    "iran": (
+        "iran", "iranian", "irgc", "artesh", "tehran", "hormuz", "strait of hormuz",
+        "shahed", "quds force", "bandar abbas", "bavar-373",
+    ),
+    "russia": (
+        "russia", "russian", "moscow", "vks", "black sea fleet", "ukraine war",
+        "russia-ukraine", "iskander", "kalibr", "t-72", "t-90", "oryx",
+    ),
+    "china": (
+        "china", "chinese", "pla", "plan", "pla navy", "taiwan", "taiwan strait",
+        "south china sea", "beijing", "rocket force", "type 055", "fujian carrier",
+    ),
+}
+
+TARGET_SOURCE_HINTS: dict[str, tuple[str, ...]] = {
+    "iran": (
+        "tehrantimes.com", "tasnimnews.com", "iranintl.com", "mehrnews.com",
+        "irna.ir", "presstv.ir", "iranwatch.org",
+    ),
+    "russia": (
+        "understandingwar.org", "kyivindependent.com", "mil.in.ua", "kyivpost.com",
+        "defence-blog.com", "rferl.org",
+    ),
+    "china": (
+        "chinamil.com.cn", "scmp.com", "globaltimes.cn", "china-defense.blogspot.com",
+        "china-arms.com", "csis.org", "rand.org",
+    ),
+}
+
+
+def _metadata_match_text(metadata: dict[str, Any]) -> str:
+    parts: list[str] = []
+    ignored_keys = {"target_keywords", "keywords"}
+    for key, value in metadata.items():
+        if key in ignored_keys:
+            continue
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, list):
+            parts.extend(str(item) for item in value if isinstance(item, str | int | float))
+    return " ".join(parts)
+
+
+def infer_targets(metadata: dict[str, Any], text: str, source: Any = "", raw_ref: Any = "") -> set[str]:
+    inferred = metadata_targets(metadata)
+    haystack = normalize_match_text(
+        " ".join([
+            text,
+            str(source or ""),
+            str(raw_ref or ""),
+            _metadata_match_text(metadata),
+        ])
+    )
+    for target, terms in TARGET_ALIASES.items():
+        if any(keyword_matches(term, haystack) for term in terms):
+            inferred.add(target)
+            continue
+        if any(hint in haystack for hint in TARGET_SOURCE_HINTS[target]):
+            inferred.add(target)
+    return inferred
+
+
+def artifact_matches_focus(
+    metadata: dict[str, Any],
+    text: str,
+    targets: list[str],
+    *,
+    source: Any = "",
+    raw_ref: Any = "",
+) -> bool:
+    if not targets:
+        return True
+    inferred = infer_targets(metadata, text, source, raw_ref)
+    return bool(inferred.intersection(target.lower() for target in targets))
+
+
+def display_target_for_signal(
+    metadata: dict[str, Any],
+    text: str,
+    targets: list[str],
+    *,
+    source: Any = "",
+    raw_ref: Any = "",
+) -> str | None:
+    inferred = infer_targets(metadata, text, source, raw_ref)
+    focus = [target.lower() for target in targets]
+    focused = [target for target in focus if target in inferred]
+    if len(focused) == 1:
+        return focused[0]
+    if len(inferred) == 1:
+        return next(iter(inferred))
+    return metadata.get("target") or metadata.get("target_country")
+
+
 def normalize_match_text(value: str) -> str:
     return (
         value.replace("’", "'")
@@ -272,18 +390,7 @@ def keyword_matches(keyword: str, text: str) -> bool:
     return re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text) is not None
 
 
-def clean_display_text(value: str) -> str:
-    without_tags = re.sub(r"<[^>]+>", " ", value)
-    return " ".join(html_lib.unescape(without_tags).split())
-
-
-def watch_terms(metadata: dict[str, Any], text: str, targets: list[str]) -> list[str]:
-    for key in ("geoparsed_places", "entities", "matched_keywords"):
-        values = metadata.get(key)
-        if isinstance(values, list):
-            terms = [value for value in values if isinstance(value, str) and value]
-            if terms:
-                return terms
+def _target_keyword_terms(text: str, targets: list[str]) -> list[str]:
     if not targets:
         return []
     try:
@@ -298,6 +405,109 @@ def watch_terms(metadata: dict[str, Any], text: str, targets: list[str]) -> list
         ][:8]
     except Exception:
         return []
+
+
+HIGH_CRITICALITY_TERMS = [
+    "strike", "strikes", "missile", "missiles", "drone", "drones", "uav",
+    "air defense", "nuclear", "warhead", "warheads", "silo", "silos",
+    "hormuz", "taiwan", "blockade", "small boats", "carrier", "submarine",
+    "troops", "losses", "combat", "attack", "attacks", "intercepted",
+]
+
+ELEVATED_CRITICALITY_TERMS = [
+    "military", "navy", "fleet", "rocket force", "irgc", "pla", "vks",
+    "buildup", "exercise", "exercises", "convoy", "artillery", "radar",
+    "coast guard", "border", "theater command", "tank", "tanks",
+]
+
+
+def _matched_criticality_terms(sig: dict[str, Any]) -> tuple[list[str], list[str]]:
+    haystack = normalize_match_text(
+        " ".join([
+            str(sig.get("text") or ""),
+            " ".join(str(e) for e in (sig.get("entities") or [])),
+            str(sig.get("source") or ""),
+        ])
+    )
+    high = [term for term in HIGH_CRITICALITY_TERMS if keyword_matches(term, haystack)]
+    elevated = [term for term in ELEVATED_CRITICALITY_TERMS if keyword_matches(term, haystack)]
+    return high, elevated
+
+
+def _compute_criticality(sig: dict[str, Any]) -> tuple[str, str, str, list[str]]:
+    """Return (color, label, justification, terms) for watch triage.
+
+    Color is a triage priority for public-source military observations, not a
+    claim of truth. The reason is persisted in JSONL logs so analysts can audit
+    why an item was colored.
+    """
+    status = str(sig.get("status", "unverified")).lower()
+    conf = float(sig.get("confidence", 0.5))
+    high_terms, elevated_terms = _matched_criticality_terms(sig)
+    terms = high_terms or elevated_terms
+
+    if high_terms:
+        label = "high"
+        reason = (
+            "High-priority public-source military signal: matched "
+            f"{', '.join(high_terms[:4])}; status={status}; confidence={conf:.0%}. "
+            "Treat as analyst-triage priority, not as confirmed truth."
+        )
+        return "red", label, reason, high_terms
+
+    if elevated_terms:
+        label = "elevated"
+        reason = (
+            "Elevated military relevance: matched "
+            f"{', '.join(elevated_terms[:4])}; status={status}; confidence={conf:.0%}. "
+            "Useful for watch context and follow-up corroboration."
+        )
+        return "yellow", label, reason, elevated_terms
+
+    if status in {"visually_confirmed", "corroborated"} or conf >= 0.82:
+        label = "corroborated"
+        reason = (
+            f"Corroborated/context signal: status={status}; confidence={conf:.0%}; "
+            "no high-priority military trigger terms matched."
+        )
+        return "blue", label, reason, terms
+
+    label = "routine"
+    reason = (
+        f"Routine/low-priority context: status={status}; confidence={conf:.0%}; "
+        "no configured critical military trigger terms matched."
+    )
+    return "green", label, reason, terms
+
+
+def apply_criticality(sig: dict[str, Any]) -> dict[str, Any]:
+    color, label, reason, terms = _compute_criticality(sig)
+    sig["criticality_color"] = color
+    sig["criticality_label"] = label
+    sig["criticality_reason"] = reason
+    sig["criticality_terms"] = terms
+    return sig
+
+
+def clean_display_text(value: str) -> str:
+    without_tags = re.sub(r"<[^>]+>", " ", value)
+    return " ".join(html_lib.unescape(without_tags).split())
+
+
+def watch_terms(metadata: dict[str, Any], text: str, targets: list[str]) -> list[str]:
+    target_terms = _target_keyword_terms(
+        " ".join([text, _metadata_match_text(metadata)]),
+        targets,
+    )
+    if target_terms:
+        return target_terms
+    for key in ("geoparsed_places", "entities", "matched_keywords"):
+        values = metadata.get(key)
+        if isinstance(values, list):
+            terms = [value for value in values if isinstance(value, str) and value]
+            if terms:
+                return terms
+    return []
 
 
 def target_label(targets: list[str]) -> str:
@@ -344,67 +554,163 @@ def configure_empty_watch_context(
     }
 
 
-def build_recent_table() -> Table:
+def _shorten(value: Any, limit: int) -> str:
+    text = str(value or "")
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _is_clickable_url(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith(("http://", "https://"))
+
+
+def _link_text(label: str, url: Any, *, color: str = "cyan") -> Text:
+    if _is_clickable_url(url):
+        return Text(label, style=Style(color=color, underline=True, link=str(url)))
+    return Text(label, style=color)
+
+
+def _country_code(target: Any) -> str:
+    return {"iran": "IR", "russia": "RU", "china": "CN"}.get(str(target or "").lower(), "--")
+
+
+def _criticality_initial(label: Any) -> str:
+    return {
+        "high": "H",
+        "elevated": "E",
+        "corroborated": "C",
+        "routine": "R",
+    }.get(str(label or "").lower(), "!")
+
+
+def _recent_table_columns(width: int) -> list[tuple[str, str, int]]:
+    if width < 85:
+        return [
+            ("time", "T", 5),
+            ("crit", "!", 1),
+            ("country", "C", 2),
+            ("source", "Src", 11),
+            ("signal", "Signal", max(26, width - 32)),
+        ]
+    if width < 110:
+        return [
+            ("time", "Time", 5),
+            ("crit", "!", 1),
+            ("country", "C", 2),
+            ("source", "Source", 13),
+            ("signal", "Signal", max(34, width - 57)),
+            ("conf", "Cnf", 4),
+            ("status", "Status", 8),
+        ]
+    return [
+        ("time", "Time", 5),
+        ("crit", "!", 1),
+        ("country", "C", 2),
+        ("source", "Source", 14),
+        ("signal", "Signal", max(34, width - 108)),
+        ("key", "Key Terms", 14),
+        ("conf", "Cnf", 4),
+        ("status", "Status", 9),
+        ("link", "Link", 18),
+    ]
+
+
+def build_recent_table(available_width: int = 140, max_items: int | None = None) -> Table:
+    """Dynamically sized table that adapts to terminal width."""
+    w = max(60, available_width)
+    columns = _recent_table_columns(w)
+    compact = len(columns) < 9
+    title = "Recent Signals" if compact else "Recent Open-Domain Military Signals"
     t = Table(
-        title="Recent Open-Domain Signals",
+        title=title,
         box=box.SIMPLE,
         show_header=True,
         header_style="bold magenta",
         expand=True,
+        padding=(0, 0),
     )
-    t.add_column("Time", style="dim", width=8)
-    t.add_column("Source", style="cyan", width=22)
-    t.add_column("Signal (first 120 chars)", style="white", width=90)
-    t.add_column("Focus", width=10)
-    t.add_column("Conf", width=5)
-    t.add_column("Status", width=16)
+
+    for col_id, header, col_width in columns:
+        if col_id == "crit":
+            t.add_column(header, style="bold", width=col_width, justify="center", no_wrap=True, overflow="crop")
+        elif col_id == "country":
+            t.add_column(header, style="bold", width=col_width, justify="center", no_wrap=True, overflow="crop")
+        elif col_id == "conf":
+            t.add_column(header, width=col_width, justify="right", no_wrap=True, overflow="crop")
+        elif col_id in {"time", "status"}:
+            t.add_column(header, width=col_width, no_wrap=True, overflow="ellipsis")
+        elif col_id == "link":
+            t.add_column(header, style="dim", width=col_width, no_wrap=True, overflow="ellipsis")
+        else:
+            t.add_column(header, width=col_width)
 
     with STATE_LOCK:
-        items = list(recent_signals)[:MAX_RECENT]
+        n = max_items or MAX_RECENT
+        items = list(recent_signals)[:n]
 
     for s in items:
-        t_str = datetime.fromtimestamp(s["ts"]).strftime("%H:%M:%S")
-        short = s["text"][:120] + ("…" if len(s["text"]) > 120 else "")
-        conf_str = f"{s['confidence']:.0%}"
-        status_style = {
-            "visually_confirmed": "green",
-            "corroborated": "blue",
-            "analyst_reviewed": "yellow",
-            "unverified": "red",
-        }.get(s["status"], "white")
-        focus = (s.get("target") or "").title()[:8] or "-"
-        t.add_row(
-            t_str,
-            s["source"][:22],
-            short,
-            focus,
-            conf_str,
-            Text(s["status"], style=status_style),
-        )
+        crit_color = s.get("criticality_color", "white")
+        raw = s.get("raw_ref") or ""
+        signal_width = next(width for cid, _, width in columns if cid == "signal")
+        source_width = next(width for cid, _, width in columns if cid == "source")
+        source = _shorten(s.get("source", "?"), source_width)
+        key_terms = ", ".join((s.get("entities") or s.get("criticality_terms") or [])[:2])
+        if not key_terms:
+            key_terms = str(s.get("provenance") or "")
+        crit_label = s.get("criticality_label") or s.get("status", "")
+        values: dict[str, Any] = {
+            "time": datetime.fromtimestamp(s["ts"]).strftime("%H:%M"),
+            "crit": Text(_criticality_initial(crit_label), style=f"bold {crit_color}"),
+            "country": _country_code(s.get("target")),
+            "source": _link_text(source, raw),
+            "signal": _shorten(s.get("text"), signal_width),
+            "key": _shorten(key_terms, 14),
+            "conf": f"{s.get('confidence', 0.5):.0%}",
+            "status": Text(_shorten(crit_label, 9), style=crit_color),
+            "link": _link_text(_shorten(raw or s.get("provenance", ""), 18), raw, color="blue"),
+        }
+        t.add_row(*(values[col_id] for col_id, _, _ in columns))
+
     if not items:
         context = watch_empty_context
+        values = {
+            "time": now_str(),
+            "crit": Text("E", style="bold yellow"),
+            "country": "--",
+            "source": "watch",
+            "signal": str(context["notice"]) if context else "waiting for live public signals...",
+            "key": "no stored rows",
+            "conf": "-",
+            "status": Text("empty", style="yellow"),
+            "link": "",
+        }
         if context:
-            t.add_row(
-                now_str(),
-                "watch ready",
-                str(context["notice"]),
-                str(context["label"])[:10],
-                "-",
-                Text("empty", style="yellow"),
-            )
-        else:
-            t.add_row("-", "waiting for signals...", "", "", "", "")
+            values["link"] = _shorten(str(context["ingest_command"]), 21)
+        t.add_row(*(values[col_id] for col_id, _, _ in columns))
     return t
 
 
 def print_watch_snapshot(main_title: str, second_line: str) -> None:
-    render_dashboard()
+    render_dashboard(live_mode=False)
     console.print(Panel.fit(
         f"[bold red]{main_title}[/]\n[dim]{second_line}[/]",
         border_style="red",
     ))
-    console.print(build_recent_table())
-    console.print(Group(build_sources_panel(), build_entities_panel()))
+    try:
+        sw = console.size.width
+    except Exception:
+        sw = 100
+    try:
+        sh = console.size.height
+    except Exception:
+        sh = 28
+    max_rows = _visible_signal_count(sw, sh)
+    console.print(build_recent_table(available_width=sw, max_items=max_rows))
+    console.print(Group(build_countries_panel(), build_sources_panel()))
+    if sw >= 95:
+        console.print(Group(build_places_panel(), build_entities_panel()))
+    else:
+        console.print(build_entities_panel())
+    console.print(build_criticality_legend(compact=sw < 95))
     actions = build_watch_actions_panel()
     if actions is not None:
         console.print(actions)
@@ -474,6 +780,40 @@ def build_entities_panel() -> Panel:
     return Panel(t, title=title, border_style="yellow", box=box.ROUNDED)
 
 
+def build_countries_panel() -> Panel:
+    with STATE_LOCK:
+        tops = country_counts.most_common(3)
+        total = sum(country_counts.values()) or 1
+
+    t = Table(box=box.MINIMAL, show_header=False, expand=True)
+    t.add_column("country", style="bold red")
+    t.add_column("cnt", justify="right")
+    t.add_column("%", justify="right", style="dim")
+
+    for c, cnt in tops:
+        pct = int((cnt / total) * 100)
+        t.add_row(c.upper(), str(cnt), f"{pct}%")
+    if not tops:
+        t.add_row("IR / RU / CN", "—", "waiting")
+    title = "By Country (live)"
+    return Panel(t, title=title, border_style="red", box=box.ROUNDED, width=22)
+
+
+def build_places_panel() -> Panel:
+    with STATE_LOCK:
+        tops = place_counts.most_common(7)
+
+    t = Table(box=box.MINIMAL, show_header=False, expand=True)
+    t.add_column("place", style="green")
+    t.add_column("n", justify="right", style="dim")
+
+    for p, c in tops:
+        t.add_row(p[:28], str(c))
+    if not tops:
+        t.add_row("geoparsed locations", "—")
+    return Panel(t, title="Hot Locations", border_style="green", box=box.ROUNDED)
+
+
 def build_footer(rate: float, spark: str) -> Text:
     return Text.assemble(
         ("q ", "bold yellow"), ("quit  ", "dim"),
@@ -483,11 +823,35 @@ def build_footer(rate: float, spark: str) -> Text:
         ("   ", ""),
         ("ctrl-c also works", "dim"),
         ("   ", ""),
-        ("Military OSINT — public sources only. Respect ToS and laws.", "dim"),
+        ("[red]█[/]high [yellow]█[/]elev [blue]█[/]ctx [green]█[/]routine - JSONL criticality_reason explains each color", "dim"),
     )
 
 
-def render_dashboard() -> Layout:
+def _visible_signal_count(term_w: int, term_h: int) -> int:
+    if term_w < 85:
+        return max(4, min(7, term_h - 17))
+    if term_w < 110 or term_h < 32:
+        return max(5, min(9, term_h - 18))
+    return max(7, min(MAX_RECENT, term_h - 18))
+
+
+def build_criticality_legend(*, compact: bool = False) -> Panel:
+    if compact:
+        body = Text.from_markup("[red]█ high[/]  [yellow]█ elev[/]  [blue]█ ctx[/]  [green]█ routine[/]\nJSONL: criticality_reason")
+        title = "Color Code"
+    else:
+        body = Text.from_markup(
+            "[red]█ High[/] kinetic/drone/missile/nuclear/sealane/Taiwan/Hormuz terms; analyst triage first\n"
+            "[yellow]█ Elevated[/] military unit/equipment/exercise/buildup terms; follow-up context\n"
+            "[blue]█ Context[/] corroborated or high-confidence context without high-priority trigger terms\n"
+            "[green]█ Routine[/] lower-priority context; still preserved with provenance\n"
+            "Every JSONL record includes criticality_label, criticality_terms, and criticality_reason."
+        )
+        title = "Criticality Color Code"
+    return Panel(body, title=title, border_style="white", box=box.ROUNDED, padding=(0, 1))
+
+
+def render_dashboard(live_mode: bool = False) -> Layout:
     # drain queue
     if SIGNAL_QUEUE is not None:
         while True:
@@ -497,33 +861,74 @@ def render_dashboard() -> Layout:
             except Empty:
                 break
 
+    # --- Dynamic real-estate detection (M1 Air laptop vs widescreen) ---
+    try:
+        term_w = console.size.width
+        term_h = console.size.height
+    except Exception:
+        term_w, term_h = 120, 40
+
+    compact = term_w < 110 or term_h < 32
+    very_compact = term_w < 85
+
     now = time.time()
     elapsed = max(1, now - start_time)
     with STATE_LOCK:
         n_sig = len(recent_signals)
         n_src = len(source_counts)
+        n_cty = sum(country_counts.values())
         recent_ev = [t for t in event_times if now - t < 180]
         rate = (len(recent_ev) / max(1, (now - (recent_ev[0] if recent_ev else now)))) * 60 if recent_ev else 0
         spark = make_sparkline(spark_buckets)
 
-    stats = f"Signals: {n_sig}   Sources: {n_src}   Events: {len(event_times)}   {int(elapsed)}s   Theaters: {', '.join(random.sample(THEATERS, 2))}"
+    # Terser stats on small screens
+    if very_compact:
+        stats = f"S:{n_sig} C:{n_cty} {int(elapsed)}s {spark}"
+    else:
+        stats = f"Signals: {n_sig}  |  Srcs: {n_src}  |  Ctry: {n_cty}  |  {int(elapsed)}s  |  ~{rate:.1f}/min  |  {spark}"
 
-    header = build_header(stats)
-    recent = build_recent_table()
+    header = build_header(stats, live=live_mode)
+
+    # Dynamic max recent + pass width so table can be terse
+    dyn_max = _visible_signal_count(term_w, term_h)
+    recent = build_recent_table(available_width=term_w, max_items=dyn_max)
+
     srcs = build_sources_panel()
     ents = build_entities_panel()
+    ctys = build_countries_panel()
+    places = build_places_panel()
     foot = build_footer(rate, spark)
+
+    legend_panel = build_criticality_legend(compact=compact)
 
     lay = Layout()
     lay.split_column(
-        Layout(header, size=5),
-        Layout(name="body"),
+        Layout(header, size=3 if compact else 4),
+        Layout(name="main", ratio=1),
         Layout(foot, size=2),
     )
-    lay["body"].split_row(
-        Layout(recent, ratio=3),
-        Layout(Group(srcs, ents), ratio=1),
-    )
+
+    if compact or very_compact:
+        # On laptop/small terminal: prioritize the signal table + minimal side info + legend
+        # Vertical stack to avoid wasting horizontal space
+        lay["main"].split_column(
+            Layout(recent, ratio=1),
+            Layout(Group(ctys, legend_panel), size=7 if not very_compact else 5),
+        )
+    else:
+        # Full widescreen: rich multi-panel layout
+        lay["main"].split_column(
+            Layout(name="top_row", ratio=3),
+            Layout(name="bottom_row", size=8),
+        )
+        lay["main"]["top_row"].split_row(
+            Layout(recent, ratio=5),
+            Layout(Group(ctys, srcs), ratio=2),
+        )
+        lay["main"]["bottom_row"].split_row(
+            Layout(Group(places, legend_panel), ratio=1),
+            Layout(ents, ratio=1),
+        )
     return lay
 
 
@@ -547,10 +952,13 @@ def run_canned(run_seconds: float = 0) -> None:
     # Seed a few initial signals so the UI isn't empty (filter by current target if set)
     for s in SIMULATED_SIGNALS:
         if not current_targets or s.get("target") in current_targets or not s.get("target"):
+            if "criticality_color" not in s:
+                s = dict(s)  # copy
+                apply_criticality(s)
             if SIGNAL_QUEUE is not None:
                 SIGNAL_QUEUE.put(s)
 
-    main_title, second_line = target_watch_title(current_targets)
+    main_title, second_line = target_watch_title(current_targets, live=False)
     console.print(Panel.fit(
         f"[bold red]{main_title}[/]\n"
         f"[dim]{second_line}[/]",
@@ -562,7 +970,7 @@ def run_canned(run_seconds: float = 0) -> None:
     else:
         msg = "Using configured public sources for the Iranian, Chinese and Russian militaries."
     console.print(f"[yellow]{msg}[/]")
-    console.print("[dim]Legend: ▁▂▃▅█ = activity sparkline (recent signal rate over time)  •  █░░░░ = confidence bar  •  sources = top by count  •  entities = key mentioned[/]")
+    console.print("[dim]Legend: ▁▂▃▅█ spark  •  C=IR/RU/CN  •  Key=matched entities/places  •  live scanner pulls dozens of public RSS+web pages (keyword filtered)  •  also writing JSONL[/]")
     console.print("[dim]Press 'q' or Ctrl-C to exit. See --help for other options.[/]\n")
 
     if SIGNAL_QUEUE is None:
@@ -578,7 +986,7 @@ def run_canned(run_seconds: float = 0) -> None:
     try:
         live.start()
         while not STOP_EVENT.is_set():
-            dash = render_dashboard()
+            dash = render_dashboard(live_mode=False)
             live.update(dash)
             if deadline and time.time() >= deadline:
                 STOP_EVENT.set()
@@ -628,6 +1036,30 @@ def run_watch(
             pass
     current_targets = [target.lower() for target in current_targets if target]
 
+    # ---------------- JSONL audit log for analysts ----------------
+    from datetime import datetime as _dt
+    from pathlib import Path as _Path
+
+    _Path("data").mkdir(parents=True, exist_ok=True)
+    stamp = _dt.now().strftime("%Y-%m-%d_%H%M") if live else _dt.now().strftime("%Y-%m-%d")
+    watch_jsonl_path = f"data/ingress-{'live' if live else 'watch'}-{stamp}.jsonl"
+    watch_jsonl_lock = _threading.Lock()
+    console.print(
+        f"[green]{'Live signals' if live else 'Rendered observations'} audit log:[/] "
+        f"[bold]{watch_jsonl_path}[/] "
+        "[dim](JSONL includes criticality_label, criticality_terms, criticality_reason, and raw_ref)[/]"
+    )
+
+    def _log_watch_jsonl(sig: dict[str, Any]) -> None:
+        try:
+            rec = dict(sig)
+            rec["logged_at"] = datetime.now(timezone.utc).isoformat()
+            with watch_jsonl_lock:
+                with open(watch_jsonl_path, "a", encoding="utf-8") as fh:
+                    fh.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
     # ---------------- Live polling threads (real public sources -> TUI + DB) ----------------
     poll_stop = _threading.Event()
     poll_threads: list[_threading.Thread] = []
@@ -667,19 +1099,30 @@ def run_watch(
                                 pass
                             # feed TUI even on re-ingest for visibility; real dups are cheap
                             text = clean_display_text(a.text or "")
+                            source_name = a.source.name or a.source.id
+                            target = display_target_for_signal(
+                                a.metadata or {},
+                                text,
+                                current_targets,
+                                source=source_name,
+                                raw_ref=a.raw_ref,
+                            )
                             sig = {
                                 "ts": time.time(),
-                                "source": a.source.name or a.source.id,
+                                "source": source_name,
                                 "type": "RSS",
                                 "text": text[:160],
                                 "confidence": round(0.68 + (hash(a.content_hash or "") % 18) / 100.0, 2),
                                 "status": "unverified",
                                 "entities": watch_terms(a.metadata or {}, text, current_targets),
                                 "provenance": f"live-rss:{(a.content_hash or 'n/a')[:8]}",
-                                "target": (a.metadata or {}).get("target_country"),
+                                "target": target,
+                                "raw_ref": a.raw_ref,
                             }
+                            apply_criticality(sig)
                             if SIGNAL_QUEUE is not None:
                                 SIGNAL_QUEUE.put(sig)
+                            _log_watch_jsonl(sig)
                     except Exception:
                         pass  # keep polling; collector records diagnostics internally
                     # jittered wait
@@ -709,19 +1152,30 @@ def run_watch(
                             except Exception:
                                 pass
                             text = clean_display_text(a.text or "")
+                            source_name = a.source.name or a.source.id
+                            target = display_target_for_signal(
+                                a.metadata or {},
+                                text,
+                                current_targets,
+                                source=source_name,
+                                raw_ref=a.raw_ref,
+                            )
                             sig = {
                                 "ts": time.time(),
-                                "source": a.source.name or a.source.id,
+                                "source": source_name,
                                 "type": "WEB",
                                 "text": text[:160],
                                 "confidence": round(0.62 + (hash(a.content_hash or "") % 15) / 100.0, 2),
                                 "status": "unverified",
                                 "entities": watch_terms(a.metadata or {}, text, current_targets),
                                 "provenance": f"live-web:{(a.content_hash or 'n/a')[:8]}",
-                                "target": (a.metadata or {}).get("target_country"),
+                                "target": target,
+                                "raw_ref": a.raw_ref,
                             }
+                            apply_criticality(sig)
                             if SIGNAL_QUEUE is not None:
                                 SIGNAL_QUEUE.put(sig)
+                            _log_watch_jsonl(sig)
                     except Exception:
                         pass
                     for _ in range(6):
@@ -773,19 +1227,38 @@ def run_watch(
                             except Exception:
                                 pass
                             text = clean_display_text(row.get("text") or "")
+                            source_name = row.get("source_name", row.get("source_id", "?"))
+                            raw_ref = row.get("raw_ref")
+                            if not artifact_matches_focus(
+                                meta,
+                                text,
+                                current_targets,
+                                source=source_name,
+                                raw_ref=raw_ref,
+                            ):
+                                continue
                             sig = {
                                 "ts": ts,
-                                "source": row.get("source_name", row.get("source_id", "?")),
+                                "source": source_name,
                                 "type": str(row.get("content_type", "text")).upper(),
                                 "text": text[:160],
                                 "confidence": round(0.70 + (hash(h) % 15) / 100.0, 2),
                                 "status": "analyst_reviewed",
                                 "entities": watch_terms(meta, text, current_targets),
                                 "provenance": f"db:{h[:8]}",
-                                "target": meta.get("target") or meta.get("target_country"),
+                                "target": display_target_for_signal(
+                                    meta,
+                                    text,
+                                    current_targets,
+                                    source=source_name,
+                                    raw_ref=raw_ref,
+                                ),
+                                "raw_ref": raw_ref,
                             }
+                            apply_criticality(sig)
                             if SIGNAL_QUEUE is not None:
                                 SIGNAL_QUEUE.put(sig)
+                            _log_watch_jsonl(sig)
                 except Exception:
                     pass
                 for _ in range(5):
@@ -813,25 +1286,41 @@ def run_watch(
                 meta = _json.loads(a.get("metadata", "{}")) if a.get("metadata") else {}
             except Exception:
                 pass
-            artifact_targets = metadata_targets(meta)
-            if current_targets and artifact_targets and artifact_targets.isdisjoint(current_targets):
+            text = clean_display_text(a.get("text") or "")
+            source_name = a.get("source_name", a.get("source_id", "?"))
+            raw_ref = a.get("raw_ref")
+            if not artifact_matches_focus(
+                meta,
+                text,
+                current_targets,
+                source=source_name,
+                raw_ref=raw_ref,
+            ):
                 skipped_for_target += 1
                 continue
-            text = clean_display_text(a.get("text") or "")
             sig = {
                 "ts": ts,
-                "source": a.get("source_name", a.get("source_id", "?")),
+                "source": source_name,
                 "type": str(a.get("content_type", "text")).upper(),
                 "text": text[:180],
                 "confidence": round(0.7 + (hash(str(a.get("id", ""))) % 20) / 100.0, 2),
                 "status": "analyst_reviewed",
                 "entities": watch_terms(meta, text, current_targets),
                 "provenance": f"db:{str(a.get('content_hash', 'n/a'))[:8]}",
-                "target": meta.get("target") or meta.get("target_country"),
+                "target": display_target_for_signal(
+                    meta,
+                    text,
+                    current_targets,
+                    source=source_name,
+                    raw_ref=raw_ref,
+                ),
+                "raw_ref": raw_ref,
             }
+            apply_criticality(sig)
             if SIGNAL_QUEUE is not None:
                 SIGNAL_QUEUE.put(sig)
                 queued_count += 1
+            _log_watch_jsonl(sig)
         if not artifacts:
             configure_empty_watch_context(current_targets, db, reason="empty")
             collect_cmd = str(watch_empty_context["ingest_command"])
@@ -862,10 +1351,13 @@ def run_watch(
         console.print(f"[yellow]Could not load data from DB ({exc}). {msg}[/]")
         for s in SIMULATED_SIGNALS:
             if not current_targets or s.get("target") in current_targets or not s.get("target"):
+                if "criticality_color" not in s:
+                    s = dict(s)
+                    apply_criticality(s)
                 if SIGNAL_QUEUE is not None:
                     SIGNAL_QUEUE.put(s)
 
-    main_title, second_line = target_watch_title(current_targets, storage=True)
+    main_title, second_line = target_watch_title(current_targets, storage=True, live=live)
     if run_seconds > 0 or not sys.stdout.isatty():
         print_watch_snapshot(main_title, second_line)
         poll_stop.set()
@@ -877,19 +1369,19 @@ def run_watch(
         f"[dim]{second_line}[/]",
         border_style="red",
     ))
-    console.print("[dim]Legend: ▁▂▃▅█ = activity sparkline (recent signal rate over time)  •  █░░░░ = confidence bar  •  sources = top by count  •  entities = key mentioned[/]")
+    console.print("[dim]Legend: ▁▂▃▅█ spark  •  C=IR/RU/CN  •  Key=matched entities/places  •  live scanner pulls dozens of public RSS+web pages (keyword filtered)  •  also writing JSONL[/]")
     console.print("[dim]Press 'q' or Ctrl-C to exit. This is a functional TUI.[/]\n")
 
     layout = Layout()
-    live = Live(layout, console=console, refresh_per_second=3, screen=True)
+    live_view = Live(layout, console=console, refresh_per_second=3, screen=True)
 
     deadline = time.time() + run_seconds if run_seconds > 0 else 0
 
     try:
-        live.start()
+        live_view.start()
         while not STOP_EVENT.is_set():
-            dash = render_dashboard()
-            live.update(dash)
+            dash = render_dashboard(live_mode=True)
+            live_view.update(dash)
             if deadline and time.time() >= deadline:
                 STOP_EVENT.set()
                 break
@@ -903,7 +1395,7 @@ def run_watch(
                 pt.join(timeout=1.5)
             except Exception:
                 pass
-        live.stop()
+        live_view.stop()
         STOP_EVENT.set()
         time.sleep(0.1)
         console.print("\n[bold]Ingress watch session ended.[/]\n")
@@ -916,7 +1408,7 @@ def demo(
 ) -> None:
     """Run the TUI with military OSINT signals."""
     if live:
-        run_watch(db_url=None, run_seconds=run_seconds, live=True)
+        run_watch(db_url=None, run_seconds=run_seconds, focus_targets=["iran", "russia", "china"], live=True)
     else:
         run_canned(run_seconds=run_seconds)
 
@@ -946,7 +1438,8 @@ def watch(
         from .targeting import set_current_target
         if not set_current_target(targets):
             console.print("[yellow]Could not persist target focus; continuing for this run only.[/]")
-    run_watch(db_url=db_url, run_seconds=run_seconds, focus_targets=targets or None, live=live)
+    run_focus = targets or (["iran", "russia", "china"] if live else None)
+    run_watch(db_url=db_url, run_seconds=run_seconds, focus_targets=run_focus, live=live)
 
 
 @app.command()
@@ -1175,7 +1668,7 @@ def ingest_web(
         try:
             if insert_artifact(art, db_url):
                 stored += 1
-                console.print(f"[green]  +[/] {art.raw_ref} (hash {art.content_hash[:10]})")
+                console.print(f"[green]  +[/] {art.raw_ref} (hash {(art.content_hash or 'n/a')[:10]})")
         except Exception as exc:
             console.print(f"[red]  ! {exc}[/]")
 
