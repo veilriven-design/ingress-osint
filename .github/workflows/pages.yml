@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+  schedule:
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -19,6 +21,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Ingress
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[full]"
+
+      - name: Refresh static dashboard data
+        env:
+          INGRESS_DB_URL: sqlite:///${{ runner.temp }}/ingress-pages.db
+        run: |
+          set -eu
+          if ! ingress ingest target --iran --russia --china --db-url "${INGRESS_DB_URL}" --limit 120; then
+            echo "::warning::Public-source collection failed; publishing the previous static snapshot."
+          fi
+          ingress export-static-dashboard \
+            --db-url "${INGRESS_DB_URL}" \
+            --output src/ingress/web/assets/dashboard-static.json \
+            --fallback src/ingress/web/assets/dashboard-static.json \
+            --limit 120
 
       - name: Publish static bundle to gh-pages
         env:

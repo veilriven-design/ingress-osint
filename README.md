@@ -83,11 +83,11 @@ uvicorn ingress.api:app --host 127.0.0.1 --port 8765
 open http://127.0.0.1:8765
 ```
 
-The web console reads the same SQLite store as the CLI, shows target tabs for Comprehensive/Iran/Russia/China, exposes clickable source links, renders criticality colors with recorded reasons, and includes a local sample-data button for smoke testing. Collection remains operator-driven through the CLI commands shown in the app. The Auto toggle refreshes the dashboard every 15 minutes.
+The web console reads the same SQLite store as the CLI, shows target tabs for Comprehensive/Iran/Russia/China, exposes clickable source links, turns observed-term chips into filters, renders criticality colors with recorded reasons, and includes a local sample-data button for smoke testing. Collection remains operator-driven through the CLI commands shown in the app. The Auto toggle refreshes the dashboard every 15 minutes.
 
 ## GitHub Pages Preview
 
-The same static web bundle is published by GitHub Actions from `src/ingress/web` as a GitHub Pages application. It uses the local API when served by FastAPI and falls back to `assets/dashboard-static.json` when `/api/dashboard` is unavailable, such as on GitHub Pages.
+The same web bundle is published by GitHub Actions from `src/ingress/web` as a GitHub Pages application. It uses the local API when served by FastAPI and falls back to `assets/dashboard-static.json` when `/api/dashboard` is unavailable, such as on GitHub Pages. The Pages workflow refreshes that JSON snapshot every 15 minutes with the public target collector, then the browser refresh button and Auto toggle reload the latest published snapshot client-side.
 
 Expected Pages URL after the workflow deploys:
 

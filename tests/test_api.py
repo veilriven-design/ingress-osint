@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from ingress.api import app
+from ingress.api import app, export_static_dashboard
 from ingress.models import Artifact, ProvenanceEntry, Source, SourceType
 from ingress.storage import ensure_schema, insert_artifact
 
@@ -41,6 +41,40 @@ def test_github_pages_static_dashboard_snapshot_is_available() -> None:
     assert {signal["target"] for signal in payload["signals"]} >= {"iran", "russia", "china"}
     assert all(str(signal["raw_ref"]).startswith("https://") for signal in payload["signals"])
     assert all(signal.get("criticality_reason") for signal in payload["signals"])
+
+
+def test_static_dashboard_exporter_writes_pages_payload(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'pages-export.db'}"
+    ensure_schema(database_url)
+    source = Source(id="rss-pages", name="Pages RSS", source_type=SourceType.RSS)
+    artifact = Artifact(
+        source=source,
+        provenance=[
+            ProvenanceEntry(
+                source_id=source.id,
+                source_type=SourceType.RSS,
+                url_or_id="https://example.com/china",
+                collector="test",
+                content_hash="pages-dashboard-hash",
+            )
+        ],
+        content_type="text",
+        raw_ref="https://example.com/china",
+        content_hash="pages-dashboard-hash",
+        fetched_at=datetime.now(timezone.utc),
+        text="PLA navy exercise reporting with drone and fleet references.",
+        metadata={"target_country": "china", "entities": ["PLA", "navy"]},
+    )
+    insert_artifact(artifact, database_url)
+    output = tmp_path / "dashboard-static.json"
+
+    payload = export_static_dashboard(output, db_url=database_url, fallback_path=None)
+
+    written = json.loads(output.read_text())
+    assert payload["status"] == "static"
+    assert payload["mode"] == "static"
+    assert payload["refresh_interval_minutes"] == 15
+    assert written["signals"][0]["country_code"] == "CN"
 
 
 def test_artifacts_endpoint_reads_sqlite_storage(tmp_path) -> None:

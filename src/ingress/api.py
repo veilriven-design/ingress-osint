@@ -45,6 +45,10 @@ TARGET_LABELS = {
 }
 COUNTRY_CODES = {"iran": "IR", "russia": "RU", "china": "CN"}
 COLOR_HEX = {"red": "#b42318", "yellow": "#b7791f", "blue": "#2563eb", "green": "#16833b"}
+STATIC_DB_MESSAGE = (
+    "GitHub Pages scheduled static dashboard; browser refresh reloads the latest "
+    "published JSON, while local FastAPI provides live SQLite updates."
+)
 
 
 class IngestRequest(BaseModel):
@@ -245,6 +249,50 @@ def _dashboard_payload(target: str, limit: int, db_url: str | None) -> dict[str,
         "commands": commands,
         "signals": signals,
     }
+
+
+def static_dashboard_payload(
+    target: str = "comprehensive",
+    limit: int = 120,
+    db_url: str | None = None,
+    fallback_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return a Pages-safe dashboard payload generated from the current SQLite store.
+
+    If scheduled public-source collection returns no matching rows, keep the published
+    page useful by falling back to the checked-in static snapshot.
+    """
+    payload = _dashboard_payload(target, limit, db_url)
+    fallback = Path(fallback_path) if fallback_path else None
+    if not payload.get("signals") and fallback and fallback.exists():
+        try:
+            loaded = json.loads(fallback.read_text())
+        except json.JSONDecodeError:
+            loaded = {}
+        if isinstance(loaded, dict) and loaded.get("signals"):
+            payload = loaded
+
+    payload["status"] = "static"
+    payload["mode"] = "static"
+    payload["generated_at"] = datetime.now(timezone.utc).isoformat()
+    payload["db_url"] = STATIC_DB_MESSAGE
+    payload["refresh_interval_minutes"] = 15
+    return payload
+
+
+def export_static_dashboard(
+    output_path: str | Path,
+    target: str = "comprehensive",
+    limit: int = 120,
+    db_url: str | None = None,
+    fallback_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Write a Pages-safe dashboard JSON file and return the exported payload."""
+    payload = static_dashboard_payload(target, limit, db_url, fallback_path)
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2) + "\n")
+    return payload
 
 
 def create_app() -> FastAPI:

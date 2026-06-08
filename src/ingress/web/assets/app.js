@@ -1,6 +1,7 @@
 const state = {
   target: "comprehensive",
   query: "",
+  termFilter: "",
   payload: null,
   selectedId: null,
   timer: null,
@@ -9,6 +10,7 @@ const state = {
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
 const STATIC_SNAPSHOT_URL = "assets/dashboard-static.json";
+const STATIC_MODE_LINE = "GitHub Pages scheduled snapshot + client filtering";
 const TARGET_LABELS = {
   comprehensive: "Comprehensive",
   iran: "Iran",
@@ -62,6 +64,24 @@ function short(value, limit = 80) {
   return text.length > limit ? `${text.slice(0, limit - 1)}...` : text;
 }
 
+function signalTerms(signal) {
+  return [...(signal.entities || []), ...(signal.criticality_terms || [])].filter(Boolean).map(String);
+}
+
+function signalSearchText(signal) {
+  return [
+    signal.source,
+    signal.text,
+    signal.target,
+    signal.status,
+    signal.criticality_label,
+    signal.raw_ref,
+    ...signalTerms(signal),
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
 function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return "--";
@@ -89,7 +109,7 @@ function signalMatchesTarget(signal, target) {
 }
 
 function summarizeSignals(signals) {
-  const terms = signals.flatMap((signal) => [...(signal.entities || []), ...(signal.criticality_terms || [])]);
+  const terms = signals.flatMap(signalTerms);
   return {
     signals: signals.length,
     countries: sortedCounts(signals.map((signal) => signal.target || signal.country_code || "unknown")),
@@ -169,20 +189,14 @@ function showToast(message) {
 function filteredSignals() {
   const signals = state.payload?.signals || [];
   const q = state.query.trim().toLowerCase();
-  if (!q) return signals;
+  const activeTerm = state.termFilter.trim().toLowerCase();
+  if (!q && !activeTerm) return signals;
   return signals.filter((signal) => {
-    const haystack = [
-      signal.source,
-      signal.text,
-      signal.target,
-      signal.status,
-      signal.criticality_label,
-      ...(signal.entities || []),
-      ...(signal.criticality_terms || []),
-    ]
-      .join(" ")
-      .toLowerCase();
-    return haystack.includes(q);
+    const haystack = signalSearchText(signal);
+    const terms = signalTerms(signal).map((term) => term.toLowerCase());
+    const matchesQuery = !q || haystack.includes(q);
+    const matchesTerm = !activeTerm || terms.includes(activeTerm) || haystack.includes(activeTerm);
+    return matchesQuery && matchesTerm;
   });
 }
 
@@ -215,7 +229,7 @@ function renderHeader() {
   if (!payload) return;
   els.modeLine.textContent =
     payload.mode === "static"
-      ? "GitHub Pages static snapshot"
+      ? STATIC_MODE_LINE
       : "Local SQLite + JSONL audit surface";
   els.title.textContent =
     payload.target === "comprehensive"
@@ -231,7 +245,7 @@ function renderHeader() {
   if (payload.mode === "static") {
     els.auditName.textContent = "Static Pages snapshot";
     els.auditMeta.textContent =
-      "Refresh reloads bundled JSON. Run the local FastAPI app for live collection and SQLite updates.";
+      "Refresh reloads the latest published JSON. Auto refresh checks again every 15 minutes.";
   } else if (audit) {
     els.auditName.textContent = audit.name;
     els.auditMeta.textContent = `${Math.round((audit.bytes || 0) / 1024)} KB updated ${formatTime(audit.updated_at)}`;
@@ -248,17 +262,21 @@ function renderHeader() {
 
 function renderSignals() {
   const signals = filteredSignals();
-  els.resultCount.textContent = `${signals.length} shown`;
+  const suffix = state.termFilter ? ` · term: ${state.termFilter}` : "";
+  els.resultCount.textContent = `${signals.length} shown${suffix}`;
+  if (!signals.some((signal) => signal.id === state.selectedId)) {
+    state.selectedId = signals[0]?.id || null;
+  }
   if (!signals.length) {
     els.signalsBody.innerHTML =
-      '<tr><td colspan="9" class="empty-state">No matching signals. Seed sample data or run a target ingest from the CLI.</td></tr>';
+      '<tr><td colspan="9" class="empty-state">No matching signals. Clear the active term/search filter or run a target ingest from the CLI.</td></tr>';
     return;
   }
 
   els.signalsBody.innerHTML = signals
     .map((signal) => {
       const selected = signal.id === state.selectedId ? " selected" : "";
-      const terms = [...(signal.entities || []), ...(signal.criticality_terms || [])]
+      const terms = signalTerms(signal)
         .filter(Boolean)
         .slice(0, 3)
         .join(", ");
@@ -348,9 +366,35 @@ function renderSummaries() {
 
   els.termList.innerHTML = (payload.summary.terms || []).length
     ? payload.summary.terms
-        .map(([term, count]) => `<span class="term-chip">${escapeHtml(term)} ${count}</span>`)
-        .join("")
+        .map(([term, count]) => {
+          const active = state.termFilter.toLowerCase() === String(term).toLowerCase();
+          return `<button class="term-chip${active ? " active" : ""}" type="button" data-term="${escapeHtml(term)}" aria-pressed="${active}">
+            <span>${escapeHtml(term)}</span><strong>${count}</strong>
+          </button>`;
+        })
+        .join("") +
+      (state.termFilter
+        ? `<button class="term-chip term-chip-clear" type="button" data-clear-term="true">Clear</button>`
+        : "")
     : '<span class="muted">No observed terms yet.</span>';
+
+  els.termList.querySelectorAll("button[data-term]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const nextTerm = chip.dataset.term || "";
+      state.termFilter = state.termFilter.toLowerCase() === nextTerm.toLowerCase() ? "" : nextTerm;
+      renderSignals();
+      renderDetail();
+      renderSummaries();
+      showToast(state.termFilter ? `Filtering term: ${state.termFilter}` : "Term filter cleared");
+    });
+  });
+  els.termList.querySelector("button[data-clear-term]")?.addEventListener("click", () => {
+    state.termFilter = "";
+    renderSignals();
+    renderDetail();
+    renderSummaries();
+    showToast("Term filter cleared");
+  });
 }
 
 async function copyText(value, label) {
@@ -362,6 +406,7 @@ els.tabs.forEach((tab) => {
   tab.addEventListener("click", async () => {
     state.target = tab.dataset.target;
     state.selectedId = null;
+    state.termFilter = "";
     await loadDashboard().catch((error) => showToast(`Refresh failed: ${error.message}`));
   });
 });
@@ -369,6 +414,7 @@ els.tabs.forEach((tab) => {
 els.searchInput.addEventListener("input", () => {
   state.query = els.searchInput.value;
   renderSignals();
+  renderDetail();
 });
 
 els.refreshNow.addEventListener("click", () => {

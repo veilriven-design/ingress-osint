@@ -661,12 +661,38 @@ a {
 }
 
 .term-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface-strong);
   color: #26384a;
   padding: 4px 8px;
   font-size: 11px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.term-chip:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.term-chip.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.term-chip strong {
+  font-size: 10px;
+}
+
+.term-chip-clear {
+  border-color: var(--line-strong);
+  background: #fff;
+  color: var(--muted);
 }
 
 .toast {

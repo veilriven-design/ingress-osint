@@ -1491,6 +1491,45 @@ def status(
     console.print(table)
 
 
+@app.command("export-static-dashboard")
+def export_static_dashboard_cmd(
+    output: str = typer.Option(
+        "src/ingress/web/assets/dashboard-static.json",
+        "--output",
+        "-o",
+        help="Dashboard JSON path to write for GitHub Pages.",
+    ),
+    target: str = typer.Option(
+        "comprehensive",
+        "--target",
+        help="Dashboard target: comprehensive, iran, russia, or china.",
+    ),
+    db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL"),
+    limit: int = typer.Option(120, "--limit", min=1, max=250),
+    fallback: str | None = typer.Option(
+        "src/ingress/web/assets/dashboard-static.json",
+        "--fallback",
+        help="Existing static JSON to reuse if scheduled collection returns no rows.",
+    ),
+) -> None:
+    """Export the current dashboard payload as a GitHub Pages-safe JSON snapshot."""
+    if target not in {"comprehensive", "iran", "russia", "china"}:
+        console.print("[red]--target must be one of: comprehensive, iran, russia, china[/]")
+        raise typer.Exit(1)
+
+    from .api import export_static_dashboard
+
+    payload = export_static_dashboard(
+        output_path=output,
+        target=target,
+        limit=limit,
+        db_url=db_url,
+        fallback_path=fallback,
+    )
+    signal_count = len(payload.get("signals") or [])
+    console.print(f"[green]Exported {signal_count} static dashboard signal(s) to {output}[/]")
+
+
 @app.command()
 def doctor(
     db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL"),
