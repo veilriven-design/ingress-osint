@@ -344,6 +344,20 @@ a {
   stroke-width: 1.9;
 }
 
+.icon-button.loading svg {
+  animation: spin-refresh 700ms linear infinite;
+}
+
+@keyframes spin-refresh {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .toggle {
   display: flex;
   align-items: center;

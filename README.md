@@ -87,7 +87,7 @@ The web console reads the same SQLite store as the CLI, shows target tabs for Co
 
 ## GitHub Pages Preview
 
-The same web bundle is published by GitHub Actions from `src/ingress/web` as a GitHub Pages application. It uses the local API when served by FastAPI and falls back to `assets/dashboard-static.json` when `/api/dashboard` is unavailable, such as on GitHub Pages. The Pages workflow refreshes that JSON snapshot every 15 minutes with the public target collector, then the browser refresh button and Auto toggle reload the latest published snapshot client-side.
+The same web bundle is published by GitHub Actions from `src/ingress/web` as a GitHub Pages application. It uses the local API when served by FastAPI and falls back to `assets/dashboard-static.json` when `/api/dashboard` is unavailable, such as on GitHub Pages. The Pages workflow refreshes that JSON snapshot every 15 minutes with the public target collector, then the browser refresh button and Auto toggle reload the latest published snapshot client-side. On Pages, the refresh button reports the last check time and whether a newer scheduled snapshot was available; live collection still happens in GitHub Actions or in the local FastAPI/CLI runtime, not inside the static browser page.
 
 Expected Pages URL after the workflow deploys:
 

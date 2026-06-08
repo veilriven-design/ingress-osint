@@ -6,6 +6,9 @@ const state = {
   selectedId: null,
   timer: null,
   mode: "api",
+  lastRefreshAt: null,
+  lastSnapshotKey: "",
+  lastSnapshotStatus: "",
 };
 
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
@@ -86,6 +89,17 @@ function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return "--";
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatTimeWithSeconds(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "--";
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function snapshotKey(payload) {
+  const ids = (payload.signals || []).slice(0, 8).map((signal) => signal.id).join(",");
+  return [payload.generated_at || "", payload.summary?.signals || 0, ids].join("|");
 }
 
 function prefersStaticSnapshot() {
@@ -200,21 +214,57 @@ function filteredSignals() {
   });
 }
 
-async function loadDashboard() {
+function setRefreshButtonLoading(isLoading) {
+  els.refreshNow.disabled = isLoading;
+  els.refreshNow.classList.toggle("loading", isLoading);
+  els.refreshNow.setAttribute("aria-busy", isLoading ? "true" : "false");
+}
+
+function refreshMessage(mode, reason, changed) {
+  const payload = state.payload;
+  const count = payload?.summary?.signals || 0;
+  if (mode === "static") {
+    if (changed) return `New Pages snapshot loaded: ${count} signal(s)`;
+    if (reason === "auto") return `Auto checked Pages snapshot: ${count} signal(s)`;
+    if (reason === "manual") return `Pages snapshot checked: ${count} signal(s), no newer publish yet`;
+    return `Pages snapshot loaded: ${count} signal(s)`;
+  }
+  return `Dashboard refreshed: ${count} signal(s)`;
+}
+
+async function loadDashboard({ reason = "initial" } = {}) {
   els.signalsBody.innerHTML = '<tr><td colspan="9" class="empty-state">Loading signals...</td></tr>';
+  const previousSnapshotKey = state.lastSnapshotKey;
   let apiError = null;
   if (!prefersStaticSnapshot()) {
     try {
       const payload = await fetchJson(`/api/dashboard?target=${encodeURIComponent(state.target)}&limit=80`);
+      state.lastRefreshAt = new Date().toISOString();
+      state.lastSnapshotStatus = "";
       setDashboardPayload(payload, "api");
-      return;
+      return { mode: "api", changed: true, message: refreshMessage("api", reason, true) };
     } catch (error) {
       apiError = error;
     }
   }
 
   const payload = await fetchJson(`${STATIC_SNAPSHOT_URL}?updated=${Date.now()}`);
+  const currentSnapshotKey = snapshotKey(payload);
+  const changed = Boolean(previousSnapshotKey && previousSnapshotKey !== currentSnapshotKey);
+  state.lastRefreshAt = new Date().toISOString();
+  state.lastSnapshotKey = currentSnapshotKey;
+  state.lastSnapshotStatus =
+    reason === "manual"
+      ? changed
+        ? "New snapshot loaded."
+        : "Snapshot checked; no newer Pages publish yet."
+      : reason === "auto"
+        ? changed
+          ? "Auto refresh loaded a new snapshot."
+          : "Auto refresh checked; no newer Pages publish yet."
+        : "Snapshot loaded.";
   setDashboardPayload(payload, "static", apiError);
+  return { mode: "static", changed, message: refreshMessage("static", reason, changed) };
 }
 
 function render() {
@@ -244,8 +294,10 @@ function renderHeader() {
   const audit = payload.summary.audit_logs?.[0];
   if (payload.mode === "static") {
     els.auditName.textContent = "Static Pages snapshot";
+    const generatedAt = formatTimeWithSeconds(payload.generated_at);
+    const checkedAt = state.lastRefreshAt ? formatTimeWithSeconds(state.lastRefreshAt) : "--";
     els.auditMeta.textContent =
-      "Refresh reloads the latest published JSON. Auto refresh checks again every 15 minutes.";
+      `${state.lastSnapshotStatus} Last checked ${checkedAt}; snapshot generated ${generatedAt}; scheduled source refresh every 15 minutes.`;
   } else if (audit) {
     els.auditName.textContent = audit.name;
     els.auditMeta.textContent = `${Math.round((audit.bytes || 0) / 1024)} KB updated ${formatTime(audit.updated_at)}`;
@@ -407,7 +459,11 @@ els.tabs.forEach((tab) => {
     state.target = tab.dataset.target;
     state.selectedId = null;
     state.termFilter = "";
-    await loadDashboard().catch((error) => showToast(`Refresh failed: ${error.message}`));
+    setRefreshButtonLoading(true);
+    await loadDashboard({ reason: "target" })
+      .then((result) => showToast(result.message))
+      .catch((error) => showToast(`Refresh failed: ${error.message}`))
+      .finally(() => setRefreshButtonLoading(false));
   });
 });
 
@@ -418,7 +474,11 @@ els.searchInput.addEventListener("input", () => {
 });
 
 els.refreshNow.addEventListener("click", () => {
-  loadDashboard().then(() => showToast("Dashboard refreshed")).catch((error) => showToast(`Refresh failed: ${error.message}`));
+  setRefreshButtonLoading(true);
+  loadDashboard({ reason: "manual" })
+    .then((result) => showToast(result.message))
+    .catch((error) => showToast(`Refresh failed: ${error.message}`))
+    .finally(() => setRefreshButtonLoading(false));
 });
 
 els.autoRefresh.addEventListener("change", () => {
@@ -426,7 +486,7 @@ els.autoRefresh.addEventListener("change", () => {
   state.timer = null;
   if (els.autoRefresh.checked) {
     state.timer = window.setInterval(() => {
-      loadDashboard().catch((error) => showToast(`Auto refresh failed: ${error.message}`));
+      loadDashboard({ reason: "auto" }).catch((error) => showToast(`Auto refresh failed: ${error.message}`));
     }, AUTO_REFRESH_MS);
     showToast("Auto refresh every 15 min");
   } else {
@@ -461,7 +521,7 @@ els.copyIngest.addEventListener("click", () => {
   );
 });
 
-loadDashboard().catch((error) => {
+loadDashboard({ reason: "initial" }).catch((error) => {
   els.signalsBody.innerHTML = `<tr><td colspan="9" class="empty-state">Dashboard failed: ${escapeHtml(error.message)}</td></tr>`;
   showToast("Dashboard failed to load");
 });
