@@ -14,7 +14,11 @@ Example usage:
 from __future__ import annotations
 
 import hashlib
+import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 
 try:
     import feedparser  # type: ignore[import-untyped]
@@ -41,6 +45,7 @@ class RSSCollector:
         credibility_prior: float = 0.65,
         tos_summary: str = "Public RSS/Atom feed. Respect publisher terms.",
         keywords: list[str] | None = None,
+        timeout: float = 8.0,
     ) -> None:
         self.feed_urls = [feed_url] if isinstance(feed_url, str) else feed_url
         self.source_id = source_id or "multi-rss"
@@ -48,21 +53,46 @@ class RSSCollector:
         self.credibility_prior = credibility_prior
         self.tos_summary = tos_summary
         self.keywords = [k.lower() for k in (keywords or [])]
+        self.timeout = timeout
         self.diagnostics: list[str] = []
+
+    def _parse_feed(self, url: str) -> Any:
+        if url.lower().startswith(("http://", "https://")):
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "ingress-osint/0.1 (+https://github.com/veilriven-design/ingress-osint)"},
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    payload = resp.read(5_000_000)
+                return feedparser.parse(payload)
+            except Exception as exc:
+                self.diagnostics.append(f"{url}: {exc}")
+                return feedparser.parse("")
+        return feedparser.parse(url)
 
     def _derive_source_id(self, url: str) -> str:
         # Stable short id from URL
         h = hashlib.sha256(url.encode()).hexdigest()[:12]
         return f"rss-{h}"
 
-    def _make_source(self) -> Source:
+    def _source_name_for_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        if parsed.netloc:
+            return parsed.netloc.removeprefix("www.")
+        return Path(url).name or self.name
+
+    def _make_source(self, url: str) -> Source:
+        source_name = self.name
+        if self.name == "Multi RSS Target" and len(self.feed_urls) > 1:
+            source_name = self._source_name_for_url(url)
         return Source(
-            id=self.source_id,
-            name=self.name,
+            id=self.source_id if len(self.feed_urls) == 1 else self._derive_source_id(url),
+            name=source_name,
             source_type=SourceType.RSS,
             credibility_prior=self.credibility_prior,
-            base_url=self.feed_urls[0] if self.feed_urls else None,  # type: ignore[arg-type]
-            config={"feed_urls": self.feed_urls, "keywords": self.keywords},
+            base_url=url,
+            config={"feed_url": url, "keywords": self.keywords},
             tos_summary=self.tos_summary,
         )
 
@@ -78,13 +108,13 @@ class RSSCollector:
             raise RuntimeError("RSS ingest requires feedparser. Install with: pip install -e '.[full]'")
 
         self.diagnostics = []
-        source = self._make_source()
         artifacts: list[Artifact] = []
 
         for url in self.feed_urls:
             if limit is not None and len(artifacts) >= limit:
                 break
-            feed = feedparser.parse(url)
+            source = self._make_source(url)
+            feed = self._parse_feed(url)
             bozo_exception = getattr(feed, "bozo_exception", None)
             if bozo_exception:
                 self.diagnostics.append(f"{url}: {bozo_exception}")

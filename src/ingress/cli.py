@@ -126,10 +126,11 @@ source_counts: Counter[str] = Counter()
 event_times: deque[float] = deque(maxlen=300)
 spark_buckets: deque[int] = deque([0] * SPARK_HISTORY, maxlen=SPARK_HISTORY)
 start_time = time.time()
+watch_empty_context: dict[str, Any] = {}
 
 
 def reset_dashboard_state() -> None:
-    global SIGNAL_QUEUE, start_time, spark_buckets, recent_signals, source_counts, event_times
+    global SIGNAL_QUEUE, start_time, spark_buckets, recent_signals, source_counts, event_times, watch_empty_context
 
     STOP_EVENT.clear()
     SIGNAL_QUEUE = Queue()
@@ -138,6 +139,7 @@ def reset_dashboard_state() -> None:
     event_times = deque(maxlen=300)
     spark_buckets = deque([0] * SPARK_HISTORY, maxlen=SPARK_HISTORY)
     start_time = time.time()
+    watch_empty_context = {}
 
 
 def now_str() -> str:
@@ -254,6 +256,50 @@ def metadata_targets(metadata: dict[str, Any]) -> set[str]:
     return targets
 
 
+def target_label(targets: list[str]) -> str:
+    return " / ".join(target.title() for target in targets) if targets else "Iran / Russia / China"
+
+
+def target_flags(targets: list[str]) -> str:
+    return " ".join(f"--{target}" for target in targets) if targets else "--iran --russia --china"
+
+
+def configure_empty_watch_context(
+    targets: list[str],
+    db: str,
+    *,
+    reason: str,
+    skipped_for_target: int = 0,
+) -> None:
+    global watch_empty_context
+
+    config: Any
+    try:
+        from .targeting import get_target_config
+
+        countries = targets or ["iran", "russia", "china"]
+        config = get_target_config(countries)
+    except Exception:
+        config = {"rss_feeds": [], "telegram_channels": [], "keywords": []}
+
+    label = target_label(targets)
+    flags = target_flags(targets)
+    if reason == "no_match":
+        notice = f"No stored artifacts match {label}; {skipped_for_target} artifact(s) are tagged for another focus."
+    else:
+        notice = f"Watch is active for {label}, but {db} has no stored artifacts yet."
+
+    watch_empty_context = {
+        "label": label,
+        "notice": notice,
+        "feeds": list(config.get("rss_feeds", []))[:5],
+        "channels": list(config.get("telegram_channels", []))[:5],
+        "keywords": list(config.get("keywords", []))[:8],
+        "ingest_command": f"ingress ingest target {flags} --db-url {db}",
+        "sample_command": f"ingress ingest sample --db-url {db}",
+    }
+
+
 def build_recent_table() -> Table:
     t = Table(
         title="Recent Open-Domain Signals",
@@ -292,7 +338,18 @@ def build_recent_table() -> Table:
             Text(s["status"], style=status_style),
         )
     if not items:
-        t.add_row("-", "waiting for signals...", "", "", "")
+        context = watch_empty_context
+        if context:
+            t.add_row(
+                now_str(),
+                "watch ready",
+                str(context["notice"]),
+                str(context["label"])[:10],
+                "-",
+                Text("empty", style="yellow"),
+            )
+        else:
+            t.add_row("-", "waiting for signals...", "", "", "", "")
     return t
 
 
@@ -304,6 +361,21 @@ def print_watch_snapshot(main_title: str, second_line: str) -> None:
     ))
     console.print(build_recent_table())
     console.print(Group(build_sources_panel(), build_entities_panel()))
+    actions = build_watch_actions_panel()
+    if actions is not None:
+        console.print(actions)
+
+
+def build_watch_actions_panel() -> Panel | None:
+    context = watch_empty_context
+    if not context:
+        return None
+    body = Text()
+    body.append("Collect target data: ", style="bold")
+    body.append(str(context["ingest_command"]))
+    body.append("\nLocal smoke data: ", style="bold")
+    body.append(str(context["sample_command"]))
+    return Panel(body, title="Next Actions", border_style="cyan", box=box.ROUNDED)
 
 
 def build_sources_panel() -> Panel:
@@ -317,8 +389,17 @@ def build_sources_panel() -> Panel:
     for src, cnt in tops:
         t.add_row(src[:28], str(cnt))
     if not tops:
-        t.add_row("scanning open sources...", "")
-    return Panel(t, title="Active Sources", border_style="green", box=box.ROUNDED)
+        context = watch_empty_context
+        feeds = list(context.get("feeds", [])) if context else []
+        channels = list(context.get("channels", [])) if context else []
+        for feed in feeds:
+            t.add_row(feed[:42], "rss")
+        for channel in channels:
+            t.add_row(("t.me/" + channel)[:42], "tg")
+        if not feeds and not channels:
+            t.add_row("scanning open sources...", "")
+    title = "Configured Sources" if not tops and watch_empty_context else "Active Sources"
+    return Panel(t, title=title, border_style="green", box=box.ROUNDED)
 
 
 def build_entities_panel() -> Panel:
@@ -336,8 +417,17 @@ def build_entities_panel() -> Panel:
     for e, c in tops:
         t.add_row(e, str(c))
     if not tops:
-        t.add_row("no entities yet", "")
-    return Panel(t, title="Key Entities", border_style="yellow", box=box.ROUNDED)
+        context = watch_empty_context
+        keywords = list(context.get("keywords", [])) if context else []
+        for keyword in keywords[:6]:
+            t.add_row(keyword[:38], "keyword")
+        if context:
+            t.add_row(str(context["ingest_command"])[:38], "collect")
+            t.add_row(str(context["sample_command"])[:38], "smoke")
+        if not keywords and not context:
+            t.add_row("no entities yet", "")
+    title = "Watch Readiness" if not tops and watch_empty_context else "Key Entities"
+    return Panel(t, title=title, border_style="yellow", box=box.ROUNDED)
 
 
 def build_footer(rate: float, spark: str) -> Text:
@@ -526,14 +616,26 @@ def run_watch(
                 SIGNAL_QUEUE.put(sig)
                 queued_count += 1
         if not artifacts:
+            configure_empty_watch_context(current_targets, db, reason="empty")
+            collect_cmd = str(watch_empty_context["ingest_command"])
             console.print(
                 "[yellow]No stored artifacts found.[/] "
-                "Run [bold]ingress ingest sample --db-url "
-                f"{db}[/] for a local smoke dataset, or ingest an RSS feed."
+                f"Run [bold]{collect_cmd}[/] to collect target feeds, or "
+                f"[bold]ingress ingest sample --db-url {db}[/] for a local smoke dataset."
             )
         elif current_targets and queued_count == 0 and skipped_for_target:
             label = ", ".join(target.title() for target in current_targets)
-            console.print(f"[yellow]No stored artifacts match current focus: {label}.[/]")
+            configure_empty_watch_context(
+                current_targets,
+                db,
+                reason="no_match",
+                skipped_for_target=skipped_for_target,
+            )
+            collect_cmd = str(watch_empty_context["ingest_command"])
+            console.print(
+                f"[yellow]No stored artifacts match current focus: {label}.[/] "
+                f"Collect with [bold]{collect_cmd}[/]."
+            )
     except Exception as exc:
         if current_targets:
             mil_str = ", ".join(t.title() for t in current_targets)
@@ -915,7 +1017,8 @@ def ingest_target(
     config = get_target_config(targets)
 
     # Verbose output: show what we're actually targeting
-    console.print(f"[cyan]Targeting {targets} — Iranian / Chinese / Russian military focus[/]")
+    target_names = " / ".join(target.title() for target in targets)
+    console.print(f"[cyan]Targeting {target_names} military focus[/]")
     feeds = config.get("rss_feeds", [])
     chans = config.get("telegram_channels", [])
     kws = config.get("keywords", [])

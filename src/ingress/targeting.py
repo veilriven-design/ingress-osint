@@ -92,9 +92,9 @@ def get_russia_config() -> TargetConfig:
     """
     return {
         "rss_feeds": [
-            "https://eng.mil.ru/rss",  # Russian MoD English official
-            "https://www.oryxspioenkop.com/feeds",  # Oryx visual confirmations
-            "https://www.mod.gov.ru/rss",  # Russian MoD main
+            "https://kyivindependent.com/news-archive/rss/",
+            "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/?outputType=xml",
+            "https://www.defensenews.com/arc/outboundfeeds/rss/category/land/?outputType=xml",
         ],
         "telegram_channels": [
             "rybar",           # Rybar (highly cited for Russian military ops, units, equipment)
@@ -108,6 +108,8 @@ def get_russia_config() -> TargetConfig:
             "T-72", "T-72B3", "T-80", "T-80BV", "T-90", "T-90M", "BMP-2", "BMP-3", "BTR-82A", "MT-LB",
             "Su-35", "Su-27", "Su-30", "Su-34", "MiG-29", "MiG-31", "Tu-95", "Tu-22M3",
             "Iskander", "Kalibr", "Kinzhal", "S-400", "S-300", "Pantsir", "Lancet", "Orlan-10",
+            "Russia-Ukraine", "Ukraine war", "Russian forces", "Russian troops", "Russian military",
+            "Russian army", "Russian drone", "Russian drones", "Russian missile", "Russian missiles",
             "Russian MoD", "VKS", "Russian Aerospace Forces", "Russian Navy", "Black Sea Fleet", "Northern Fleet",
             "Oryx", "Russian losses", "visually confirmed", "T-72 destroyed",
             "Wagner", "PMC", "Eastern Military District", "Central Military District", "Western MD", "Southern MD",
@@ -115,7 +117,7 @@ def get_russia_config() -> TargetConfig:
             "Russian electronic warfare", "UAV", "drone strike Russia",
             "Black Sea Fleet", "Admiral Makarov", "Moskva", "Ropucha class", "Kalibr launch",
             "Wagner Group", "Storm-Z", "Russian artillery", "Grad", "Uragan", "Smerch",
-            "Russian air defense", "S-400 battery", "Mi-8", "Ka-52", "Mi-28"
+            "Russian air defense", "Russian air defense systems", "S-400 battery", "Mi-8", "Ka-52", "Mi-28"
         ],
         "x_accounts": [
             "mod_russia",  # Official

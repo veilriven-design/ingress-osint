@@ -146,6 +146,22 @@ def test_watch_uses_saved_target_when_no_explicit_target_is_given(tmp_path, monk
     assert "Sample Defense RSS" in result.output
 
 
+def test_empty_watch_renders_target_context_instead_of_dead_wait_state(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("INGRESS_STATE_DIR", str(tmp_path / "state"))
+    database = tmp_path / "empty-watch.db"
+    db_url = f"sqlite:///{database}"
+
+    result = runner.invoke(app, ["watch", "--russia", "--run-seconds", "1", "--db-url", db_url])
+
+    assert result.exit_code == 0, result.output
+    assert "INGRESS  •  Russia Military" in result.output
+    assert "Watch is active for Russia" in result.output
+    assert "Configured Sources" in result.output
+    assert "Watch Readiness" in result.output
+    assert "ingress ingest target --russia" in result.output
+    assert "waiting for signals..." not in result.output
+
+
 def test_watch_filters_stored_rows_that_have_other_target_metadata(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("INGRESS_STATE_DIR", str(tmp_path / "state"))
     database = tmp_path / "watch-filter.db"
