@@ -12,7 +12,7 @@ def test_version_command() -> None:
     result = runner.invoke(app, ["version"])
 
     assert result.exit_code == 0
-    assert "ingress 0.1.0" in result.output
+    assert "ingress 0.2.0" in result.output
 
 
 def test_db_init_command_creates_sqlite_schema(tmp_path) -> None:

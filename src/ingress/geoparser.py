@@ -8,16 +8,33 @@ from typing import Any, Optional
 
 
 def geoparse(text: str) -> list[str]:
-    """Return known military-relevant place hints found in free text."""
+    """Return known military-relevant place hints found in free text (Iran/Russia/China focus + theaters)."""
     if not text:
         return []
-    # Dummy: look for common military places mentioned in keywords
-    places = []
+    places: list[str] = []
     text_lower = text.lower()
-    for kw in ["pokrovsk", "vuhledar", "kyiv", "odesa", "taiwan", "hormuz", "black sea", "south china sea"]:
+    # Expanded public-domain relevant locations for target countries + active theaters
+    candidates = [
+        "pokrovsk", "vuhledar", "kyiv", "odesa", "dnipro", "kharkiv", "belgorod", "kursk",
+        "taiwan", "taiwan strait", "south china sea", "east china sea", "philippine sea",
+        "hormuz", "strait of hormuz", "bandar abbas", "chabahar", "jask", "kish",
+        "black sea", "crimea", "sevastopol", "zaporizhzhia", "donetsk", "luhansk",
+        "hainan", "zhanjiang", "qingdao", "guangdong", "fujian", "shandong",
+        "okinawa", "guam", "okinotorishima",
+    ]
+    for kw in candidates:
         if kw in text_lower:
             places.append(kw.title())
-    return list(set(places)) or []
+    # also try optional geotext if installed (broader)
+    try:
+        from geotext import GeoText  # type: ignore
+        g = GeoText(text)
+        for c in (g.cities or []):
+            if len(c) > 3:
+                places.append(c)
+    except Exception:
+        pass
+    return list(dict.fromkeys(places))[:12] or []
 
 
 def extract_geo_from_analysis(analysis: dict[str, Any]) -> Optional[dict[str, float]]:

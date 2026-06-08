@@ -9,17 +9,25 @@ Status: alpha, but the core CLI, SQLite storage, RSS ingest, credentialed Telegr
 ## What Works Today
 
 - Rich `ingress demo` TUI with synthetic sample signals for first-run orientation.
-- `ingress watch` TUI backed by SQLite artifacts, without silently mixing in generated live data.
+- `ingress watch` TUI (and `watch --live`) backed by SQLite; `--live` runs background collectors polling public RSS + web sources in real time and surfaces new signals immediately in the dashboard (plus DB tailer).
 - RSS/Atom ingest with content-hash deduplication and provenance rows.
 - Telegram public-channel ingest through Telethon when `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are provided.
-- Target presets for Iran, Russia, and China that combine public RSS/Telegram source lists and military keyword filters.
+- Target presets for Iran, Russia, and China that combine dozens of public RSS feeds, Telegram channels, keyword filters, and curated public web pages (from many domains across the internet).
 - Media analysis for local files or URLs with EXIF, optional perceptual image hash, optional ffprobe video metadata, SHA-256 identity, entity hints, and optional storage.
 - SQLite-backed artifacts, provenance, sightings, case notes, delta listing, and GeoJSON export.
 - `ingress doctor`, `ingress status`, and `ingress ingest sample` for local verification without network access.
 - FastAPI skeleton exposing `/health`, `/artifacts`, `/sightings`, and an explicit operator-driven `/ingest` placeholder.
 - Ruff, mypy, and pytest coverage for the current core behavior.
 
-Not implemented yet: Postgres/PostGIS migrations, Docker Compose, ADS-B/AIS/Sentinel collectors, X collection, fusion/corroboration scoring, local LLM extraction, and a web dashboard.
+Not implemented yet: Postgres/PostGIS migrations, Docker Compose, ADS-B/AIS/Sentinel collectors, full X collection (stub only; requires paid API), fusion/corroboration scoring, local LLM extraction, and a web dashboard.
+
+## What's New (v0.2)
+- Dramatically expanded public source lists for Iran, Russia, and China (many more RSS feeds from Defense News sections, Kyiv Independent, RealClearDefense, Tasnim, Mehr, SCMP, China defense blogs, Al Jazeera, ISW, etc.).
+- New WebPageCollector for high-signal public pages without reliable RSS (e.g. chinamil.com.cn English, Understanding War, Tasnim home, SCMP PLA topics). Explicitly listed and keyword-filtered.
+- `ingress watch --live` : real-time background polling of your chosen public RSS + web sources while the TUI renders live updates (plus DB tailer for external ingests). Signals appear with provenance "live-rss:..." / "live-web:...".
+- `ingress ingest web <public-url>` for ad-hoc page snapshots.
+- Better geoparsing (expanded military locations + optional geotext), stored in artifact metadata for TUI/entities panels.
+- All collection remains bounded, keyword-filtered where appropriate, provenance-preserving, and opt-in. "From everywhere on the internet" means curated high-value public domains, not indiscriminate scrape.
 
 ## Install For Development
 
@@ -74,16 +82,26 @@ ingress ingest rss https://www.defensenews.com/arc/outboundfeeds/rss/ \
   --db-url sqlite:///./data/ingress.db
 ```
 
-Watch stored data:
+Ingest (or snapshot) a specific public web page for sources without RSS:
+
+```bash
+ingress ingest web http://eng.chinamil.com.cn/ --db-url sqlite:///./data/ingress.db
+```
+
+Watch stored data (or live from the open internet):
 
 ```bash
 ingress watch --db-url sqlite:///./data/ingress.db
+# Real-time collection + display from dozens of public RSS feeds and key web pages:
+ingress watch --live --iran --russia --china --db-url sqlite:///./data/ingress.db
 ```
 
-Use targeted public-source presets:
+Use targeted public-source presets (now with many more public RSS + web pages from global domains):
 
 ```bash
 ingress ingest target --iran --russia --china --db-url sqlite:///./data/ingress.db
+# Real-time watch while collecting in background:
+ingress watch --live --russia --db-url sqlite:///./data/ingress.db
 ```
 
 Telegram ingest requires credentials from `https://my.telegram.org`:

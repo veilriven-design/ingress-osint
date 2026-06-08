@@ -21,6 +21,7 @@ class SourceType(str, Enum):
     MEDIA = "media"
     USER_UPLOAD = "user_upload"
     WEB_ARCHIVE = "web_archive"
+    WEB_PAGE = "web_page"
     # Add more as collectors are added
 
 

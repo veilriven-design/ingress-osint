@@ -27,6 +27,11 @@ try:
 except ImportError:  # pragma: no cover - exercised by minimal installs
     feedparser = None  # type: ignore[assignment]
 
+try:
+    import httpx  # type: ignore[import-untyped]
+except ImportError:
+    httpx = None  # type: ignore[assignment]
+
 from ..models import Artifact, ProvenanceEntry, Source, SourceType
 
 
@@ -79,11 +84,18 @@ class RSSCollector:
 
     def _parse_feed(self, url: str) -> Any:
         if url.lower().startswith(("http://", "https://")):
+            headers = {"User-Agent": "ingress-osint/0.2 (+https://github.com/veilriven-design/ingress-osint)"}
+            if httpx is not None:
+                try:
+                    with httpx.Client(follow_redirects=True, timeout=self.timeout, headers=headers) as client:
+                        resp = client.get(url)
+                        resp.raise_for_status()
+                        return feedparser.parse(resp.content)
+                except Exception as exc:
+                    self.diagnostics.append(f"{url}: httpx {exc}")
+                    # fallthrough to urllib
             try:
-                req = urllib.request.Request(
-                    url,
-                    headers={"User-Agent": "ingress-osint/0.1 (+https://github.com/veilriven-design/ingress-osint)"},
-                )
+                req = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     payload = resp.read(5_000_000)
                 return feedparser.parse(payload)
@@ -211,6 +223,14 @@ class RSSCollector:
                         "matched_keywords": matched_keywords,
                     },
                 )
+                # Enrich with geoparsed places for downstream display / fusion (best effort)
+                try:
+                    from ..geoparser import geoparse
+                    gp = geoparse(text or title)
+                    if gp:
+                        art.metadata["geoparsed_places"] = gp
+                except Exception:
+                    pass
                 artifacts.append(art)
 
         return artifacts

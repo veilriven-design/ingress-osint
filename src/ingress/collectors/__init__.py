@@ -14,7 +14,17 @@ from __future__ import annotations
 
 from .rss import RSSCollector
 from .telegram import TelegramCollector
+from .web import WebPageCollector
 from .x import XCollector
 from ..targeting import get_iran_config, get_russia_config, get_china_config, get_target_config
 
-__all__ = ["RSSCollector", "TelegramCollector", "XCollector", "get_iran_config", "get_russia_config", "get_china_config", "get_target_config"]
+__all__ = [
+    "RSSCollector",
+    "TelegramCollector",
+    "WebPageCollector",
+    "XCollector",
+    "get_iran_config",
+    "get_russia_config",
+    "get_china_config",
+    "get_target_config",
+]

@@ -24,7 +24,7 @@ This is alpha software. Use responsibly and in accordance with all
 applicable laws and source Terms of Service.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .targeting import (
     get_iran_config,

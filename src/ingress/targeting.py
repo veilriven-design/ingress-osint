@@ -32,18 +32,29 @@ class TargetConfig(TypedDict):
     telegram_channels: list[str]
     keywords: list[str]
     x_accounts: list[str]
+    web_pages: list[str]
     description: str
 
 
 def get_iran_config() -> TargetConfig:
     """EXTREMELY IN-DEPTH public sources and keywords for Iranian military (IRGC, Artesh, missile/drone/naval/air programs, units, exercises, claims).
-    Sources are publicly known open-domain military OSINT / official statements.
+    Sources are publicly known open-domain military OSINT / official statements. From public domains across the internet.
     """
     return {
         "rss_feeds": [
+            # Core public Iran + regional defense coverage (public RSS)
             "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/mideast-africa/?outputType=xml",
             "https://www.tehrantimes.com/rss",
             "https://www.aljazeera.com/xml/rss/all.xml",
+            "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml",
+            # Additional high-signal public feeds frequently covering Iran military developments
+            "https://kyivindependent.com/news-archive/rss/",
+            "https://www.realcleardefense.com/rss",
+            "https://rss.feedburner.com/defensenews/feed",
+            # Iran state / semi-state English public RSS where available (public)
+            "https://www.tasnimnews.com/en/rss/feed/0/7/0/all-stories",
+            "https://en.mehrnews.com/rss",
+            "https://www.al-monitor.com/rss",
         ],
         "telegram_channels": [
             # Public Telegram channels for Iranian military signals (official/state/OSINT)
@@ -81,19 +92,36 @@ def get_iran_config() -> TargetConfig:
             "BashaReport",
             "IntelCrab",   # Known Iran OSINT
         ],
-        "description": "EXTREMELY DEEP Iranian military (IRGC/Artesh): missiles (ballistic/cruise), drones (Shahed), naval (IRGCN, Artesh), air defense, exercises, bases, units, official claims. All public sources."
+        "web_pages": [
+            # Public web pages (no reliable RSS or high-signal landing pages) - bounded explicit list
+            "https://www.tasnimnews.com/en",
+            "https://www.tehrantimes.com/",
+            "https://www.iranintl.com/en",
+            "https://en.mehrnews.com/",
+        ],
+        "description": "EXTREMELY DEEP Iranian military (IRGC/Artesh): missiles (ballistic/cruise), drones (Shahed), naval (IRGCN, Artesh), air defense, exercises, bases, units, official claims. Public sources from many domains."
     }
 
 
 def get_russia_config() -> TargetConfig:
     """EXTREMELY IN-DEPTH public sources and keywords for Russian military (MoD, VKS, Navy, Ground Forces, equipment, units, operations, losses, exercises).
-    All from public open sources (established OSINT like Rybar, Oryx, official MoD).
+    All from public open sources (established OSINT like Rybar, Oryx, official MoD). Sources from public domains across the internet.
     """
     return {
         "rss_feeds": [
+            # High volume public coverage of Russian forces / Ukraine war (public RSS)
             "https://kyivindependent.com/news-archive/rss/",
             "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/?outputType=xml",
             "https://www.defensenews.com/arc/outboundfeeds/rss/category/land/?outputType=xml",
+            "https://www.realcleardefense.com/rss",
+            "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml",
+            # Additional public defense / conflict reporting feeds
+            "https://defence-blog.com/topics/russia-ukraine/feed/",
+            "https://kyivindependent.com/rss/",
+            "https://rss.feedburner.com/defensenews/feed",
+            # ISW and analytical public updates (daily assessments frequently cover RU mil)
+            "https://understandingwar.org/rss.xml",
+            "https://www.understandingwar.org/rss",
         ],
         "telegram_channels": [
             "rybar",           # Rybar (highly cited for Russian military ops, units, equipment)
@@ -123,18 +151,33 @@ def get_russia_config() -> TargetConfig:
             "oryxspioenkop",  # 
             "zvezdanews",
         ],
-        "description": "EXTREMELY DEEP Russian military: specific equipment (T-72B3, Su-35, Iskander, Lancet), units (1st GTA, VDV divisions), fleets, districts, losses (Oryx), official claims, electronic warfare, UAVs. Public OSINT + MoD."
+        "web_pages": [
+            # Public pages with frequent high-signal updates (no/fragile RSS)
+            "https://understandingwar.org/",
+            "https://www.kyivindependent.com/",
+            "https://www.realcleardefense.com/",
+            "https://defence-blog.com/",
+        ],
+        "description": "EXTREMELY DEEP Russian military: specific equipment (T-72B3, Su-35, Iskander, Lancet), units (1st GTA, VDV divisions), fleets, districts, losses (Oryx), official claims, electronic warfare, UAVs. Public OSINT + MoD from many domains."
     }
 
 
 def get_china_config() -> TargetConfig:
     """EXTREMELY IN-DEPTH public sources and keywords for Chinese PLA (Eastern/Western/Southern/Northern/Central Theater Commands, Navy, Air Force, Rocket Force, exercises in Taiwan/SCS, equipment, units, drills).
-    All public (PLA Daily, Global Times, official MSA announcements, CGTN).
+    All public (PLA Daily, Global Times, official MSA announcements, CGTN). Sources from public domains across the internet.
     """
     return {
         "rss_feeds": [
+            # Public PLA / China military coverage
             "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/asia-pacific/?outputType=xml",
             "https://www.scmp.com/rss/4/feed",
+            "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml",
+            "https://www.realcleardefense.com/rss",
+            # Additional public English-language mil/defense feeds covering PLAN / PLAAF / Rocket Force activity
+            "https://china-defense.blogspot.com/feeds/posts/default",
+            "https://www.china-arms.com/feed/",
+            "https://rss.feedburner.com/defensenews/feed",
+            "https://www.aljazeera.com/xml/rss/all.xml",
         ],
         "telegram_channels": [
             # Public for PLA
@@ -165,7 +208,14 @@ def get_china_config() -> TargetConfig:
             "CGTNOfficial",
             "ChinaMilitary",  # PLA media
         ],
-        "description": "EXTREMELY DEEP Chinese PLA: Theater Commands, specific ships (Type 055, Shandong), aircraft (J-20), missiles (DF-21/26), exercises (Taiwan Strait, SCS), units (Marine Corps, Rocket Force), official drills/announcements. Public sources."
+        "web_pages": [
+            # Official / high-signal public pages (PLA English home, SCMP PLA coverage, etc.)
+            "http://eng.chinamil.com.cn/",
+            "https://www.scmp.com/topics/pla-daily",
+            "https://www.scmp.com/asia",
+            "https://www.scmp.com/topics/china-military",
+        ],
+        "description": "EXTREMELY DEEP Chinese PLA: Theater Commands, specific ships (Type 055, Shandong), aircraft (J-20), missiles (DF-21/26), exercises (Taiwan Strait, SCS), units (Marine Corps, Rocket Force), official drills/announcements. Public sources from many domains."
     }
 
 
@@ -189,6 +239,7 @@ def get_target_config(countries: list[str]) -> TargetConfig:
         "telegram_channels": [],
         "keywords": [],
         "x_accounts": [],
+        "web_pages": [],
         "description": "",
     }
     for country in countries:
@@ -198,11 +249,13 @@ def get_target_config(countries: list[str]) -> TargetConfig:
             merged["telegram_channels"].extend(cfg["telegram_channels"])
             merged["keywords"].extend(cfg["keywords"])
             merged["x_accounts"].extend(cfg["x_accounts"])
+            merged["web_pages"].extend(cfg.get("web_pages", []))
             merged["description"] += f" {cfg['description']}"
     merged["rss_feeds"] = list(dict.fromkeys(merged["rss_feeds"]))
     merged["telegram_channels"] = list(dict.fromkeys(merged["telegram_channels"]))
     merged["keywords"] = list(dict.fromkeys(merged["keywords"]))
     merged["x_accounts"] = list(dict.fromkeys(merged["x_accounts"]))
+    merged["web_pages"] = list(dict.fromkeys(merged["web_pages"]))
     return merged
 
 
@@ -224,7 +277,7 @@ def _run_target_collectors(
     artifacts: list["Artifact"] = []
     targets = [country.lower() for country in (target_countries or [])]
 
-    # RSS (feeds + keywords)
+    # RSS (feeds + keywords) - primary real-time capable public source
     if config.get("rss_feeds"):
         rss = RSSCollector(config["rss_feeds"], keywords=config.get("keywords"))
         arts = rss.collect(limit=limit)
@@ -236,6 +289,20 @@ def _run_target_collectors(
             ensure_schema(db_url)
             for a in arts:
                 insert_artifact(a, db_url)  # dedup inside
+
+    # Web pages (explicit public pages for sites lacking good RSS; keyword filtered)
+    if config.get("web_pages"):
+        from .collectors.web import WebPageCollector
+        web = WebPageCollector(config["web_pages"], keywords=config.get("keywords"))
+        arts = web.collect(limit=limit)
+        _stamp_artifact_targets(arts, targets)
+        if diagnostics is not None:
+            diagnostics.extend(web.diagnostics)
+        artifacts.extend(arts)
+        if db_url:
+            ensure_schema(db_url)
+            for a in arts:
+                insert_artifact(a, db_url)
 
     # Telegram (public channels, requires env creds)
     if config.get("telegram_channels"):

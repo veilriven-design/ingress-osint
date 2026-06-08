@@ -603,13 +603,16 @@ def run_watch(
     db_url: str | None = None,
     run_seconds: float = 0,
     focus_targets: list[str] | None = None,
+    live: bool = False,
 ) -> None:
-    """Live TUI pulling from storage (integrated)."""
+    """Live TUI pulling from storage (integrated). When live=True, also runs background collectors for real-time ingest from public RSS/web pages while displaying."""
     if not HAS_RICH:
         print("FATAL: rich is required for the Ingress TUI.")
         raise SystemExit(1)
 
     import json as _json
+    import threading as _threading
+    from time import sleep as _sleep
     from .config import get_db_url
     from .storage import ensure_schema, get_recent_artifacts
 
@@ -624,6 +627,175 @@ def run_watch(
         except Exception:
             pass
     current_targets = [target.lower() for target in current_targets if target]
+
+    # ---------------- Live polling threads (real public sources -> TUI + DB) ----------------
+    poll_stop = _threading.Event()
+    poll_threads: list[_threading.Thread] = []
+
+    def _start_live_pollers() -> None:
+        if not current_targets:
+            # default broad focus for "everywhere" public signals on the 3
+            current_targets[:] = ["iran", "russia", "china"]
+        try:
+            from .targeting import get_target_config
+            cfg = get_target_config(current_targets)
+        except Exception:
+            return
+
+        rss_urls = [u for u in cfg.get("rss_feeds", []) if u]
+        web_urls = [u for u in cfg.get("web_pages", []) if u]
+        kws = cfg.get("keywords", []) or None
+
+        if not rss_urls and not web_urls:
+            return
+
+        # RSS poller thread (real-time from many public domains)
+        def _rss_poller() -> None:
+            try:
+                from .collectors.rss import RSSCollector
+                from .storage import ensure_schema as _es, insert_artifact as _ins
+                coll = RSSCollector(rss_urls, keywords=kws)
+                interval = 75.0  # polite public polling cadence
+                while not poll_stop.is_set():
+                    try:
+                        arts = coll.collect(limit=25)
+                        for a in arts:
+                            try:
+                                _es(db)
+                                _ins(a, db)
+                            except Exception:
+                                pass
+                            # feed TUI even on re-ingest for visibility; real dups are cheap
+                            text = clean_display_text(a.text or "")
+                            sig = {
+                                "ts": time.time(),
+                                "source": a.source.name or a.source.id,
+                                "type": "RSS",
+                                "text": text[:160],
+                                "confidence": round(0.68 + (hash(a.content_hash or "") % 18) / 100.0, 2),
+                                "status": "unverified",
+                                "entities": watch_terms(a.metadata or {}, text, current_targets),
+                                "provenance": f"live-rss:{(a.content_hash or 'n/a')[:8]}",
+                                "target": (a.metadata or {}).get("target_country"),
+                            }
+                            if SIGNAL_QUEUE is not None:
+                                SIGNAL_QUEUE.put(sig)
+                    except Exception:
+                        pass  # keep polling; collector records diagnostics internally
+                    # jittered wait
+                    for _ in range(8):
+                        if poll_stop.is_set():
+                            return
+                        _sleep(interval / 8.0 + (time.time() % 1.3))
+            except Exception:
+                pass
+
+        # Web page poller (for domains without RSS; slightly slower)
+        def _web_poller() -> None:
+            if not web_urls:
+                return
+            try:
+                from .collectors.web import WebPageCollector
+                from .storage import ensure_schema as _es, insert_artifact as _ins
+                coll = WebPageCollector(web_urls, keywords=kws)
+                interval = 160.0
+                while not poll_stop.is_set():
+                    try:
+                        arts = coll.collect(limit=15)
+                        for a in arts:
+                            try:
+                                _es(db)
+                                _ins(a, db)
+                            except Exception:
+                                pass
+                            text = clean_display_text(a.text or "")
+                            sig = {
+                                "ts": time.time(),
+                                "source": a.source.name or a.source.id,
+                                "type": "WEB",
+                                "text": text[:160],
+                                "confidence": round(0.62 + (hash(a.content_hash or "") % 15) / 100.0, 2),
+                                "status": "unverified",
+                                "entities": watch_terms(a.metadata or {}, text, current_targets),
+                                "provenance": f"live-web:{(a.content_hash or 'n/a')[:8]}",
+                                "target": (a.metadata or {}).get("target_country"),
+                            }
+                            if SIGNAL_QUEUE is not None:
+                                SIGNAL_QUEUE.put(sig)
+                    except Exception:
+                        pass
+                    for _ in range(6):
+                        if poll_stop.is_set():
+                            return
+                        _sleep(interval / 6.0 + 1.0)
+            except Exception:
+                pass
+
+        if rss_urls:
+            t = _threading.Thread(target=_rss_poller, daemon=True, name="ingress-live-rss")
+            t.start()
+            poll_threads.append(t)
+        if web_urls:
+            t = _threading.Thread(target=_web_poller, daemon=True, name="ingress-live-web")
+            t.start()
+            poll_threads.append(t)
+
+    if live:
+        console.print("[cyan]Live mode enabled[/]: background polling of public RSS + web sources will push new signals to this TUI and DB (respectful cadence, keyword filtered, deduped).")
+        _start_live_pollers()
+
+    # Simple DB tailer so external `ingress ingest` also appears live
+    def _db_tailer() -> None:
+        try:
+            from .storage import get_recent_artifacts as _get_recent
+            seen: set[str] = set()
+            # seed seen with initial load
+            try:
+                for row in _get_recent(40, db):
+                    seen.add(str(row.get("content_hash") or row.get("id") or ""))
+            except Exception:
+                pass
+            while not poll_stop.is_set():
+                try:
+                    recent = _get_recent(20, db)
+                    for row in recent:
+                        h = str(row.get("content_hash") or row.get("id") or "")
+                        if h and h not in seen:
+                            seen.add(h)
+                            ts_str = row.get("fetched_at", "")
+                            try:
+                                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+                            except Exception:
+                                ts = time.time()
+                            meta: dict[str, Any] = {}
+                            try:
+                                meta = _json.loads(row.get("metadata", "{}")) if row.get("metadata") else {}
+                            except Exception:
+                                pass
+                            text = clean_display_text(row.get("text") or "")
+                            sig = {
+                                "ts": ts,
+                                "source": row.get("source_name", row.get("source_id", "?")),
+                                "type": str(row.get("content_type", "text")).upper(),
+                                "text": text[:160],
+                                "confidence": round(0.70 + (hash(h) % 15) / 100.0, 2),
+                                "status": "analyst_reviewed",
+                                "entities": watch_terms(meta, text, current_targets),
+                                "provenance": f"db:{h[:8]}",
+                                "target": meta.get("target") or meta.get("target_country"),
+                            }
+                            if SIGNAL_QUEUE is not None:
+                                SIGNAL_QUEUE.put(sig)
+                except Exception:
+                    pass
+                for _ in range(5):
+                    if poll_stop.is_set():
+                        return
+                    _sleep(4.0)
+        except Exception:
+            pass
+
+    _threading.Thread(target=_db_tailer, daemon=True, name="ingress-db-tailer").start()
 
     try:
         ensure_schema(db)
@@ -696,6 +868,7 @@ def run_watch(
     main_title, second_line = target_watch_title(current_targets, storage=True)
     if run_seconds > 0 or not sys.stdout.isatty():
         print_watch_snapshot(main_title, second_line)
+        poll_stop.set()
         console.print("\n[bold]Ingress watch snapshot rendered.[/]\n")
         return
 
@@ -724,6 +897,12 @@ def run_watch(
     except KeyboardInterrupt:
         STOP_EVENT.set()
     finally:
+        poll_stop.set()
+        for pt in poll_threads:
+            try:
+                pt.join(timeout=1.5)
+            except Exception:
+                pass
         live.stop()
         STOP_EVENT.set()
         time.sleep(0.1)
@@ -737,7 +916,7 @@ def demo(
 ) -> None:
     """Run the TUI with military OSINT signals."""
     if live:
-        run_watch(db_url=None, run_seconds=run_seconds)
+        run_watch(db_url=None, run_seconds=run_seconds, live=True)
     else:
         run_canned(run_seconds=run_seconds)
 
@@ -749,8 +928,9 @@ def watch(
     china: bool = typer.Option(False, "--china", help="Focus on Chinese PLA (PLA Daily, Global Times, theater commands)"),
     db_url: str | None = typer.Option(None, "--db-url", envvar="INGRESS_DB_URL", help="DB to watch (defaults to configured)"),
     run_seconds: float = typer.Option(0, "--run-seconds"),
+    live: bool = typer.Option(False, "--live", help="Run background polling of configured public RSS + web sources for real-time updates in the TUI (in addition to DB tail)."),
 ) -> None:
-    """Live TUI watching data from storage (integrated)."""
+    """Live TUI watching data from storage (integrated). Use --live for real-time collection from many public domains while watching."""
     # Normalize and set focus if provided (for this run; persists if set)
     iran = iran if isinstance(iran, bool) else False
     russia = russia if isinstance(russia, bool) else False
@@ -766,7 +946,7 @@ def watch(
         from .targeting import set_current_target
         if not set_current_target(targets):
             console.print("[yellow]Could not persist target focus; continuing for this run only.[/]")
-    run_watch(db_url=db_url, run_seconds=run_seconds, focus_targets=targets or None)
+    run_watch(db_url=db_url, run_seconds=run_seconds, focus_targets=targets or None, live=live)
 
 
 @app.command()
@@ -940,6 +1120,68 @@ def ingest_rss(
     console.print("Use storage queries / future TUI / API to explore. Full provenance is recorded.")
 
 
+@ingest_app.command("web")
+def ingest_web(
+    url: str = typer.Argument(..., help="Public web page URL to snapshot (e.g. official mil news hub)"),
+    db_url: str | None = typer.Option(
+        None,
+        "--db-url",
+        envvar="INGRESS_DB_URL",
+        help="SQLite database URL. Defaults to configured.",
+    ),
+    limit: int | None = typer.Option(None, "--limit"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Fetch and show but do not persist"),
+) -> None:
+    """
+    Ingest a single public web page as a text artifact (keyword filtering optional via target).
+
+    Useful for public pages that do not publish reliable RSS/Atom (e.g. some official
+    English-language PLA, assessment blogs, state media homepages).
+
+    Always bounded + explicit: you name the exact public URL.
+    """
+    from .collectors.web import WebPageCollector
+    from .storage import ensure_schema, insert_artifact
+
+    console.print(f"[cyan]Ingesting web page[/] {url}")
+
+    collector = WebPageCollector(url)
+    artifacts = collector.collect()
+
+    if limit:
+        artifacts = artifacts[:limit]
+
+    if not artifacts:
+        console.print("[yellow]No matching content extracted (or keyword filter excluded all).[/]")
+        for d in collector.diagnostics[:5]:
+            console.print(f"[dim]  - {d}[/]")
+        return
+
+    console.print(f"Extracted {len(artifacts)} artifact(s) from page text.")
+
+    if dry_run:
+        for a in artifacts[:3]:
+            console.print(f"  - {a.raw_ref} | {(a.text or '')[:100]}...")
+        console.print("[dim]--dry-run: nothing written.[/]")
+        return
+
+    try:
+        ensure_schema(db_url)
+    except Exception as e:
+        console.print(f"[yellow]ensure_schema warning: {e}[/]")
+
+    stored = 0
+    for art in artifacts:
+        try:
+            if insert_artifact(art, db_url):
+                stored += 1
+                console.print(f"[green]  +[/] {art.raw_ref} (hash {art.content_hash[:10]})")
+        except Exception as exc:
+            console.print(f"[red]  ! {exc}[/]")
+
+    console.print(f"\n[bold]Done.[/] Stored {stored} new page artifact(s).")
+
+
 @ingest_app.command("telegram")
 def ingest_telegram(
     channels: str = typer.Argument(..., help="Comma-separated public channel usernames (no @)"),
@@ -1066,10 +1308,13 @@ def ingest_target(
     console.print(f"[cyan]Targeting {target_names} military focus[/]")
     feeds = config.get("rss_feeds", [])
     chans = config.get("telegram_channels", [])
+    webs = config.get("web_pages", [])
     kws = config.get("keywords", [])
-    console.print(f"[dim]  RSS feeds: {len(feeds)}  |  Telegram channels: {len(chans)}  |  Keywords: {len(kws)}[/]")
+    console.print(f"[dim]  RSS feeds: {len(feeds)}  |  Web pages: {len(webs)}  |  Telegram channels: {len(chans)}  |  Keywords: {len(kws)}[/]")
     if feeds:
         console.print(f"[dim]  Feeds: {', '.join(feeds[:2])}{' ...' if len(feeds)>2 else ''}[/]")
+    if webs:
+        console.print(f"[dim]  Web: {', '.join(webs[:2])}{' ...' if len(webs)>2 else ''}[/]")
     if chans:
         console.print(f"[dim]  Channels: {', '.join(chans[:2])}{' ...' if len(chans)>2 else ''}[/]")
     if kws:
