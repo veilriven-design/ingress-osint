@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ingress Web Console</title>
+    <link rel="stylesheet" href="assets/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="side-rail" aria-label="Ingress navigation">
+        <div class="brand-block">
+          <div class="brand-emblem" aria-hidden="true">
+            <svg viewBox="0 0 48 48" focusable="false">
+              <path class="emblem-shield" d="M24 5 39 12v12.5c0 8.6-5.8 15.3-15 18.5-9.2-3.2-15-9.9-15-18.5V12l15-7Z" />
+              <path class="emblem-horizon" d="M14.5 28.5h19" />
+              <path class="emblem-arrow" d="M24 12.5 32.5 31h-5.8L24 36.5 21.3 31h-5.8L24 12.5Z" />
+              <path class="emblem-pulse" d="M17 16.5a11.2 11.2 0 0 0-4.5 8.8M31 16.5a11.2 11.2 0 0 1 4.5 8.8" />
+            </svg>
+          </div>
+          <div>
+            <div class="brand-title-row">
+              <h1>Ingress</h1>
+            </div>
+            <p>Open-domain signal workbench</p>
+          </div>
+        </div>
+
+        <nav class="target-nav" aria-label="Target focus">
+          <button class="target-tab active" data-target="comprehensive" type="button">Comprehensive</button>
+          <button class="target-tab" data-target="iran" type="button">Iran</button>
+          <button class="target-tab" data-target="russia" type="button">Russia</button>
+          <button class="target-tab" data-target="china" type="button">China</button>
+        </nav>
+
+        <section class="rail-section" aria-labelledby="legend-title">
+          <h2 id="legend-title">Criticality</h2>
+          <div class="legend-list">
+            <div><span class="legend-dot high"></span><strong>High</strong><small>Kinetic, missile, drone, nuclear, Taiwan, Hormuz</small></div>
+            <div><span class="legend-dot elevated"></span><strong>Elevated</strong><small>Military units, equipment, exercises, buildup</small></div>
+            <div><span class="legend-dot context"></span><strong>Context</strong><small>Corroborated or high-confidence context</small></div>
+            <div><span class="legend-dot routine"></span><strong>Routine</strong><small>Lower-priority retained context</small></div>
+          </div>
+        </section>
+
+        <section class="rail-section commands" aria-labelledby="commands-title">
+          <h2 id="commands-title">Operator Actions</h2>
+          <button id="seedSample" class="command-button" type="button">Seed local sample</button>
+          <button id="copyLive" class="command-button secondary" type="button">Copy live command</button>
+          <button id="copyIngest" class="command-button secondary" type="button">Copy ingest command</button>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyeline">Local SQLite + JSONL audit surface</p>
+            <h2 id="viewTitle">Comprehensive Military Scanner</h2>
+          </div>
+          <div class="toolbar" aria-label="Dashboard controls">
+            <label class="search-box">
+              <span>Search</span>
+              <input id="searchInput" type="search" placeholder="source, term, location..." autocomplete="off" />
+            </label>
+            <button id="refreshNow" class="icon-button" type="button" title="Refresh now" aria-label="Refresh now">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 0 1-13.66 5.66M4 12A8 8 0 0 1 17.66 6.34"/><path d="M20 5v6h-6M4 19v-6h6"/></svg>
+            </button>
+            <label class="toggle">
+              <input id="autoRefresh" type="checkbox" />
+              <span>15m Auto</span>
+            </label>
+          </div>
+        </header>
+
+        <section class="metrics-strip" aria-label="Operational summary">
+          <div class="metric"><span>Signals</span><strong id="metricSignals">0</strong></div>
+          <div class="metric"><span>Network</span><strong id="metricNetwork">0</strong></div>
+          <div class="metric"><span>Artifacts</span><strong id="metricArtifacts">0</strong></div>
+          <div class="metric"><span>Sources</span><strong id="metricSources">0</strong></div>
+          <div class="metric"><span>Updated</span><strong id="metricUpdated">--</strong></div>
+        </section>
+
+        <section class="audit-band" aria-label="Audit status">
+          <div>
+            <strong id="auditName">No JSONL audit log yet</strong>
+            <span id="auditMeta">Run watch or seed local sample data to populate the dashboard.</span>
+          </div>
+          <code id="dbUrl">sqlite:///./data/ingress.db</code>
+        </section>
+
+        <section class="network-panel" aria-label="Network telemetry">
+          <div class="panel-heading network-heading">
+            <div>
+              <h3>Network Telemetry Review</h3>
+              <span id="networkResultCount">0 observations</span>
+            </div>
+            <div class="network-actions">
+              <button id="seedNetwork" class="mini-button" type="button">Seed demo</button>
+              <button id="captureLiveNetwork" class="mini-button" type="button" title="Capture a focused local connection-table snapshot for selected public target domains">Capture local snapshot</button>
+              <button id="copyNetwork" class="mini-button secondary" type="button">Copy monitor</button>
+              <button id="copyNetworkImport" class="mini-button secondary" type="button">Copy import</button>
+            </div>
+          </div>
+          <div class="network-summary-strip">
+            <div><span>Observations</span><strong id="networkCount">0</strong></div>
+            <div><span>Domains</span><strong id="networkDomains">0</strong></div>
+            <div><span>Protocols</span><strong id="networkProtocols">0</strong></div>
+            <div><span>Updated</span><strong id="networkUpdated">--</strong></div>
+          </div>
+          <div id="networkHighlights" class="network-highlights"></div>
+
+          <div id="networkDemoWarning" class="demo-warning" style="display:none;">
+            <strong>DEMO / SYNTHETIC DATA DETECTED</strong>
+            <span>Processes named <code>sample-*</code> or telemetry marked <code>demo</code>, <code>sample</code>, or <code>synthetic</code> are smoke-test records. They are not proof of real host activity.</span>
+            <div class="triage-hints">
+              Next: compare against imported telemetry, focused local snapshots, or <code>ingress-*.jsonl</code> timestamps before treating a row as operational evidence.
+            </div>
+          </div>
+
+          <div class="network-table-wrap">
+            <table class="network-table">
+              <thead>
+                <tr>
+                  <th>Remote / IOC</th>
+                  <th>Proto</th>
+                  <th>Process</th>
+                  <th>Indicators / Flow</th>
+                  <th>Conf / Note</th>
+                </tr>
+              </thead>
+              <tbody id="networkBody">
+                <tr><td colspan="5" class="empty-state">Loading network telemetry...</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="triage-actions">
+            <small>Recommended triage for target-domain touches: source provenance, passive DNS, process hash, socket owner, and whether the connection was user-initiated.</small>
+          </div>
+        </section>
+
+        <section class="content-grid">
+          <div class="signal-panel">
+            <div class="panel-heading">
+              <h3>Recent Signals</h3>
+              <span id="resultCount">0 shown</span>
+            </div>
+            <div class="table-wrap">
+              <table class="signal-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>!</th>
+                    <th>C</th>
+                    <th>Source</th>
+                    <th>Signal</th>
+                    <th>Key Terms</th>
+                    <th>Conf</th>
+                    <th>Status</th>
+                    <th>Link</th>
+                  </tr>
+                </thead>
+                <tbody id="signalsBody">
+                  <tr><td colspan="9" class="empty-state">Loading local signals...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <aside class="detail-panel" aria-label="Selected signal detail">
+            <div class="panel-heading">
+              <h3>Signal Detail</h3>
+              <span id="detailTarget">No selection</span>
+            </div>
+            <div id="detailBody" class="detail-empty">
+              Select a row to inspect provenance, criticality reasoning, and raw source reference.
+            </div>
+          </aside>
+        </section>
+
+        <section class="bottom-grid" aria-label="Summary panels">
+          <div class="summary-panel">
+            <div class="panel-heading"><h3>Country Distribution</h3></div>
+            <div id="countryBars" class="bar-list"></div>
+          </div>
+          <div class="summary-panel">
+            <div class="panel-heading"><h3>Source Activity</h3></div>
+            <div id="sourceList" class="rank-list"></div>
+          </div>
+          <div class="summary-panel">
+            <div class="panel-heading"><h3>Observed Terms</h3></div>
+            <div id="termList" class="term-cloud"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="assets/app.js" type="module"></script>
+  </body>
+</html>
